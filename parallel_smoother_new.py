@@ -32,6 +32,19 @@ class ParallelSmoother(Module):
             batched_data[key] = einops.rearrange(value, f"t b{extra_dims_as_letters} -> (t b){extra_dims_as_letters}")
         return batched_data
 
+
+    @staticmethod
+    def _get_time_zero_data(**data):
+        batched_data = {}
+        for key, value in data.items():
+            if value is None:
+                continue
+            if key == "series_metadata":
+                batched_data[key] = value
+                continue
+            batched_data[key] = value[0]
+        return batched_data
+
     class logsumredexp(torch.autograd.Function):
         @staticmethod
         def forward(ctx, left, centre, right):
@@ -108,7 +121,8 @@ class ParallelSmoother(Module):
         prev_state_repeat = einops.repeat(state[:-1], 't b n d -> (t b) (m n) d', m = n_particles)
         obs_score = self.SSM.observation_model.score(**batched_data)
         del(batched_data["state"])
-        prior_density = self.SSM.prior_model.log_density(state=state[0], observation=observation[0])
+        t_zero_data = ParallelSmoother._get_time_zero_data(state = state, observation=observation, control=control, time=time, series_metadata=series_metadata)
+        prior_density = self.SSM.prior_model.log_density(**t_zero_data)
         dynamic_density = self.SSM.dynamic_model.log_density(state=state_repeat, prev_state=prev_state_repeat, **batched_data)
         obs_score = einops.rearrange(obs_score, "(t b) n -> t b 1 n", t = time_extent + 1)
         prop_density = einops.rearrange(prop_density, "t b n -> t b 1 n", t = time_extent + 1)
@@ -135,6 +149,7 @@ class ParallelSmoother(Module):
         weights = einops.rearrange([torch.logsumexp(combined_weights, dim=-1), torch.logsumexp(combined_weights, dim=-2)], "s t b n -> (t s) b n")
         outer_weights = ParallelSmoother.logsumredexp.apply(useful_ls[0, 0], remaining_kernels[0], useful_ls[1, 0]) + 2*log(weights.size(-1))
         weights = torch.concat([torch.logsumexp(outer_weights, dim=-1).unsqueeze(0), weights, torch.logsumexp(outer_weights, dim=-2).unsqueeze(0)], dim=0) - 3*log(weights.size(-1))
+        weights, _ = pydpf.normalise(weights)
         if isinstance(aggregation_function, dict):
             output = {}
             for name, function in aggregation_function.items():

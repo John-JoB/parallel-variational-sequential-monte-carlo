@@ -43,3 +43,21 @@ class MSE(Module):
     def forward(self, weight, ground_truth, **data):
         est = self.marginal_expec(weight=weight, ground_truth=ground_truth **data)
         return torch.mean(torch.sum((est - ground_truth)**2, dim=-1), dim =-1)
+
+class NegativeKernelLogLikelihood(Module):
+    """Get the negative log data likelihood per-timestep under a kernel density estimator.
+        This function applies a kernel density estimator over the particles and calculates the log likelihood of the ground truth given the KDE.
+
+        Parameters
+        ----------
+        kernel: KernelMixture
+            The kernel density estimator.
+        """
+
+    def __init__(self, kernel: pydpf.KernelMixture):
+        super().__init__()
+        self.KDE = kernel
+
+    def forward(self, *, state: Tensor, weight: Tensor, ground_truth, **kwargs):
+        """Get the negative log data likelihood factor under the a KDE and given a time-step"""
+        return -self.KDE.log_density(ground_truth, state, weight)

@@ -1,49 +1,10 @@
-import pydpf
 import torch
 from pydpf import Module
 from typing import Iterable
 from collections import OrderedDict
-
-class _l2norm(Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return torch.linalg.vector_norm(x, p=2, dim=-1, keepdim=True)
-
-class _normalise(Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x):
-        return x / torch.linalg.vector_norm(x, p=2, dim=-1, keepdim=True)
+from models.generic_nets.activation import activation_function_from_string
 
 
-def _activation_function_from_string(str_fun):
-    caseless_string = str_fun.casefold()
-    match caseless_string:
-        case 'relu':
-            return torch.nn.ReLU()
-        case 'sigmoid':
-            return torch.nn.Sigmoid()
-        case 'tanh':
-            return torch.nn.Tanh()
-        case 'prelu':
-            return torch.nn.PReLU()
-        case 'leaky_relu':
-            return torch.nn.LeakyReLU()
-        case 'softplus':
-            return torch.nn.Softplus()
-        case 'softmax':
-            return torch.nn.Softmax()
-        case 'softmin':
-            return torch.nn.Softmin()
-        case 'l2norm':
-            return _l2norm()
-        case 'normalise':
-            return _normalise()
-        case 'id':
-            return torch.nn.Identity()
-    raise ValueError(f"Activation function '{str_fun}' not recognized")
 
 
 
@@ -51,17 +12,12 @@ class FCNN(Module):
     def __init__(self, input_dim:int, output_dim:int, hidden_dim:int|Iterable[int], activation_function: Module|Iterable[Module]|str|Iterable[str], output_function: Module|None, n_hidden_layers:int|None, device):
         super().__init__()
         layers = OrderedDict()
-
-
-
-
         if output_function is None:
             if not (isinstance(activation_function, torch.nn.Module) or isinstance(activation_function, str)):
                 raise TypeError("If there is no output function, then the output is set to the activation function, but the activation function is not a Module.")
             output_function = activation_function
 
-        if isinstance(output_function, str):
-            output_function = _activation_function_from_string(output_function)
+        output_function = activation_function_from_string(output_function)
 
 
         if hidden_dim is None or hidden_dim == 0 or (hasattr(hidden_dim, "__len__") and len(hidden_dim) == 0) or n_hidden_layers == 0:
@@ -75,8 +31,7 @@ class FCNN(Module):
             activation_function = [activation_function] * n_hidden_layers
 
         for i, fun in enumerate(activation_function):
-            if isinstance(fun, str):
-                activation_function[i] = _activation_function_from_string(fun)
+            activation_function[i] = activation_function_from_string(fun)
 
         if hasattr(hidden_dim, "__len__"):
             n_hidden_layers = len(hidden_dim)

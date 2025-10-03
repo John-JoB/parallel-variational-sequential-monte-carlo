@@ -84,7 +84,8 @@ def get_mdpfs(mdps):
 def make_output_function(mdps, device):
     forward_kernel = mdps.forward_kernel
     backward_kernel = mdps.backward_kernel
-    output_kernel = make_kernel(forward_kernel, 2, 0.03, 0.1, 0.001)
+    gen = torch.Generator(device=device).manual_seed(0)
+    output_kernel = make_kernel(gen, 2, 0.03, 0.1, 0.001)
     forward_knll = pydpf.NegLogDataLikelihood_Loss(forward_kernel)
     backward_knll = pydpf.NegLogDataLikelihood_Loss(backward_kernel)
     output_knll = pydpf.NegLogDataLikelihood_Loss(output_kernel)

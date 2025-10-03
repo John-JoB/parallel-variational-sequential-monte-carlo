@@ -319,6 +319,7 @@ class TrainingStage:
         test_batch_dict = {}
 
         for epoch in range(run_info["epochs"]):
+            complete_model.train()
             step_losses = []
             train_logs = {}
             if verbose:
@@ -346,7 +347,7 @@ class TrainingStage:
                 validation_iterable = tqdm(validation_loader, desc="Validating: ")
 
             complete_model.update()
-
+            complete_model.eval()
             validation_logs = {}
             with torch.inference_mode():
                 for datum in validation_iterable:
@@ -372,6 +373,7 @@ class TrainingStage:
                 for k, v in run_info["print_each_epoch"].items():
                     print(f"{k}: {parse_formula_strip(epoch_logs, v)}")
 
+        complete_model.eval()
         if "test" in run_info:
             test_logs = {}
             if verbose:
