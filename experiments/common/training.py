@@ -3,100 +3,24 @@ import time
 import pickle
 import json
 import torch
+from sympy.codegen.cfunctions import expm1
 from tqdm import tqdm
 import numpy as np
 from abc import ABC, abstractmethod
 import pydpf
 import ast
-
-
-class _CustomNameSpace:
-    def __init__(self, d):
-        for k, v in d.items():
-            if isinstance(v, dict):
-                setattr(self, k, _CustomNameSpace(v))
-            else:
-                setattr(self, k, v)
-
-
-class _CustomTreeParser:
-    def __init__(self, ):
-        self.names = []
-
-    def search_tree(self, node):
-        if isinstance(node, ast.Name):
-            if node.id != "torch":
-                self.names.append(node.id)
-        else:
-            for child in ast.iter_child_nodes(node):
-                self.search_tree(child)
-
-def parse_formula_strip(dictionary, formula_strip):
-    fs = ast.parse(formula_strip, mode='eval')
-    ns = _CustomNameSpace(dictionary)
-    names_ob = _CustomTreeParser()
-    names_ob.search_tree(fs)
-    names = names_ob.names
-    env = {k: getattr(ns, k) for k in names}
-    env["torch"] = "torch"
-    compiled = compile(fs, filename="<ast>", mode="eval")
-    return eval(compiled, env)
-
-def parse_dictionary(read_dict, key_dict):
-    out = {}
-    for k,v in key_dict.items():
-        out[k] = parse_formula_strip(read_dict, v)
-    return out
-
-def print_output(read_dict, key_dict):
-    d = parse_dictionary(read_dict, key_dict)
-    for k, v in d.items():
-        print(f"{k}: {v}")
-
-
-def index_by_compound_key(d, k):
-    sub_keys = k.split(".")
-    c_d = d
-    for k in sub_keys:
-        c_d = c_d[k]
-    return c_d
-
-class _ModuleList(pydpf.Module):
-
-    def __init__(self, model_list):
-        super().__init__()
-        occurrence_dict = {}
-        for model in model_list:
-            if isinstance(model, torch.nn.Module):
-                name = model.__class__.__name__
-                if name in occurrence_dict:
-                    occurrence_dict[name] += 1
-                else:
-                    occurrence_dict[name] = 0
-                setattr(self, f"{name}_{occurrence_dict[name]}", model)
+from models.generic_nets.module_list import  ModuleList
+from experiments.common.dict_handling import *
 
 
 class Trainer:
 
     def __init__(self, *complete_model, stages):
-        self.complete_model = _ModuleList(complete_model)
+        self.complete_model = ModuleList(complete_model)
         self.stages = stages
 
     @staticmethod
-    def _read_dict_keys(dict, keys):
-        splits = [key.split(":") for key in keys]
-        output = {}
-        vs = [index_by_compound_key(dict, key) for key in keys]
-        for split, v in zip(splits, vs):
-            wd = output
-            for i in range(len(split) - 1):
-                if split[i] not in wd:
-                    wd[split[i]] = {}
-                elif not isinstance(wd[split[i]], dict):
-                    raise ValueError("Key collision, check that the keys are distinct")
-                wd = wd[split[i]]
-            wd[split[-1]] = v
-        return output
+
 
     def fit(self, run_name, run_info, save_intermediate_models = True, intermediate_folder = None, outputs_save_format = "pickle", verbose = True):
         if not outputs_save_format in ["pickle", "json"]:
@@ -135,7 +59,6 @@ class Trainer:
                         json.dump(save_info, f)
             if save_intermediate_models:
                 torch.save(self.complete_model.state_dict(), intermediate_folder / f"{run_name}_stage_{i+1}_model_state.pt")
-
 
 
 class TrainingStage:
@@ -178,109 +101,54 @@ class TrainingStage:
     def run_on_epoch(self):
         pass
 
-    def _get_data_dict(self, data, device):
-        if not isinstance(data, tuple):
-            data = (data,)
-        return {cat: d.to(device=device) for cat, d in zip(self.data_order, data)}
 
-    @staticmethod
-    def _dict_to_numpy(input_dict):
-        output_dict = {}
-        for k, v in input_dict.items():
-            if isinstance(v, dict):
-                output_dict[k] = TrainingStage._dict_to_numpy(v)
-            elif isinstance(v, np.ndarray):
-                output_dict[k] = v
-            elif isinstance(v, torch.Tensor):
-                output_dict[k] = v.detach().cpu().numpy()
-            else:
-                try:
-                    output_dict[k] = np.array(v)
-                except TypeError:
-                    output_dict[k] = v
-        return output_dict
-
-    @staticmethod
-    def _mean_dict(input_dict, total_items, batch_dict):
-        output = {}
-        for k, v in input_dict.items():
-            if isinstance(v, dict):
-                output[k] = TrainingStage._mean_dict(v, total_items, batch_dict[k])
-                continue
-            try:
-                output[k] = np.sum(v / total_items, axis=batch_dict[k])
-                if not isinstance(output[k], np.ndarray):
-                    output[k] = np.array(output[k])
-            except TypeError:
-                pass
-        return output
-
-    @staticmethod
-    def _append_dict(a, b, batch_dict):
-        output_dict = {}
-        for k in b:
-            if not k in a:
-                if isinstance(b[k], dict):
-                    output_dict[k] = TrainingStage._append_dict({}, b[k], batch_dict[k])
-                elif isinstance(b[k], np.ndarray):
-                    output_dict[k] = b[k]
-                else:
-                    output_dict[k] = [b[k]]
-                continue
-            if isinstance(a[k], dict):
-                output_dict[k] = TrainingStage._append_dict(a[k], b[k], batch_dict[k])
-            elif isinstance(a[k], np.ndarray):
-                output_dict[k] = np.concatenate((a[k], b[k]), axis=batch_dict[k])
-            elif isinstance(a[k], list):
-                output_dict[k] = a[k].append(b[k])
-            else:
-                assert(False)
-        return output_dict
-
-    @staticmethod
-    def _stack_dict(a, b):
-        output_dict = {}
-        for k in b:
-            if not k in a:
-                if isinstance(b[k], dict):
-                    output_dict[k] = TrainingStage._stack_dict({}, b[k])
-                elif isinstance(b[k], np.ndarray):
-                    output_dict[k] = b[k][None, ...]
-                else:
-                    output_dict[k] = [b[k]]
-                continue
-            if isinstance(a[k], dict):
-                output_dict[k] = TrainingStage._stack_dict(a[k], b[k])
-            elif isinstance(a[k], np.ndarray):
-                output_dict[k] = np.concatenate((a[k], b[k][None, ...]), axis=0)
-            elif isinstance(a[k], list):
-                output_dict[k] = a[k].append(b[k])
-            else:
-                print(a[k].__class__.__name__)
-                print(k)
-                assert (False)
-        return output_dict
+    def to_test_runner(self):
+        return Test_Runner(self.run_func, self.test_dataset, self.data_order)
 
 
+    def profile(self, complete_model, run_info, sort_by = "cuda_memory_usage"):
+        self.logged_data = {}
+        self.logged_data["train_batch_size"] = run_info["train"]["batch_size"]
+        self.logged_data["validation_batch_size"] = run_info["validation"]["batch_size"]
+        self.logged_data["epochs"] = run_info["epochs"]
+        self.logged_data["device"] = run_info["device"]
 
-    def _get_dataloader_info(self, full_dict):
-        options = ["batch_size",
-                   "shuffle",
-                   "num_workers",
-                   "pin_memory",
-                   "sampler",
-                   "collate_fn",
-                   "pin_memory",
-                   "drop_last",
-                   "timeout",
-                   "worker_init_fn",
-                   "multiprocessing_context",
-                   "generator",
-                   "prefetch_factor",
-                   "persistent_workers",
-                   "pin_memory_device"]
-        return {k:v for k,v in full_dict.items() if k in options}
+        train_loader = torch.utils.data.DataLoader(self.train_dataset, **get_dataloader_info(run_info["train"]))
+        validation_loader = torch.utils.data.DataLoader(self.validation_dataset, **get_dataloader_info(run_info["validation"]))
 
+        device = torch.device(run_info["device"])
+
+        complete_model.train()
+
+        for i, datum in enumerate(train_loader):
+            complete_model.update()
+            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA], record_shapes=True, with_stack=True, profile_memory=True) as prof:
+                with torch.profiler.record_function("fetch input"):
+                    data_dict = get_data_dict(self.data_order, datum, device)
+                with torch.profiler.record_function("forward"):
+                    train_output, batch_dict = self.run_func("train", run_info, **data_dict)
+                print(torch.cuda.max_memory_allocated() / 1e6)
+                with torch.profiler.record_function("loss"):
+                    loss = parse_formula_strip(train_output, run_info["loss"]).mean()
+                print(torch.cuda.max_memory_allocated() / 1e6)
+                with torch.profiler.record_function("backward"):
+                    loss.backward()
+                print(torch.cuda.max_memory_allocated() / 1e6)
+            print("Training profile")
+            print(prof.key_averages().table(sort_by=sort_by))
+            break
+
+        for i, datum in enumerate(validation_loader):
+            #complete_model.update()
+            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA], record_shapes=True, with_stack=True, profile_memory=True) as prof:
+                with torch.inference_mode():
+                    with torch.profiler.record_function("fetch input"):
+                        data_dict = get_data_dict(self.data_order, datum, device)
+                    with torch.profiler.record_function("forward"):
+                        validation_outputs, val_batch_dict = self.run_func("validation", run_info, **data_dict)
+            print("Inference profile")
+            print(prof.key_averages().table(sort_by=sort_by))
+            break
 
     def fit(self, complete_model, run_info, verbose = True):
 
@@ -290,12 +158,12 @@ class TrainingStage:
         self.logged_data["epochs"] = run_info["epochs"]
         self.logged_data["device"] = run_info["device"]
 
-        train_loader = torch.utils.data.DataLoader(self.train_dataset, **self._get_dataloader_info(run_info["train"]))
-        validation_loader = torch.utils.data.DataLoader(self.validation_dataset, **self._get_dataloader_info(run_info["validation"]))
+        train_loader = torch.utils.data.DataLoader(self.train_dataset, **get_dataloader_info(run_info["train"]))
+        validation_loader = torch.utils.data.DataLoader(self.validation_dataset, **get_dataloader_info(run_info["validation"]))
         train_iterable = train_loader
         validation_iterable = validation_loader
         if "test" in run_info:
-            test_loader = torch.utils.data.DataLoader(self.test_dataset, **self._get_dataloader_info(run_info["test"]))
+            test_loader = torch.utils.data.DataLoader(self.test_dataset, **get_dataloader_info(run_info["test"]))
             test_iterable = test_loader
             self.logged_data["test_batch_size"] = run_info["test"]["batch_size"]
 
@@ -309,10 +177,6 @@ class TrainingStage:
 
         best_target = torch.inf
         best_dict = complete_model.state_dict()
-
-
-
-
 
         batch_dict = {}
         val_batch_dict = {}
@@ -329,16 +193,21 @@ class TrainingStage:
             for i, datum in enumerate(train_iterable):
                 self.optimiser.zero_grad()
                 complete_model.update()
-                data_dict = self._get_data_dict(datum, device)
+                data_dict = get_data_dict(self.data_order,datum, device)
                 train_output, batch_dict = self.run_func("train", run_info, **data_dict)
                 loss = parse_formula_strip(train_output, run_info["loss"]).mean()
                 loss.backward()
+                if epoch == 0 and i == 0:
+                    for n, p in complete_model.named_parameters():
+                        print(n)
+                        if p.grad is not None:
+                            print(torch.mean(p.grad))
                 self.optimiser.step()
                 self.run_on_step()
                 if self.lr_scheduler is not None and self.lr_step_freq == "opt_step":
                     self.lr_scheduler.step()
                 step_losses.append(loss.item())
-                train_logs = TrainingStage._append_dict(train_logs, TrainingStage._dict_to_numpy(train_output), batch_dict)
+                train_logs = append_dict(train_logs, dict_to_numpy(train_output), batch_dict)
 
             if self.lr_scheduler is not None and (self.lr_step_freq == "epoch"):
                     self.lr_scheduler.step()
@@ -351,21 +220,22 @@ class TrainingStage:
             validation_logs = {}
             with torch.inference_mode():
                 for datum in validation_iterable:
-                    data_dict = self._get_data_dict(datum, device)
+                    data_dict = get_data_dict(self.data_order, datum, device)
                     validation_outputs, val_batch_dict = self.run_func("validation", run_info, **data_dict)
-                    validation_logs = TrainingStage._append_dict(validation_logs, TrainingStage._dict_to_numpy(validation_outputs), val_batch_dict)
+                    validation_logs = append_dict(validation_logs, dict_to_numpy(validation_outputs), val_batch_dict)
 
                 train_logs["train_loss"] = np.array(step_losses)
                 batch_dict["train_loss"] = 0
-                mean_train_logs = self._mean_dict(train_logs, len(self.train_dataset), batch_dict)
-                mean_validation_logs = self._mean_dict(validation_logs, len(self.validation_dataset), val_batch_dict)
+                mean_train_logs = mean_dict(train_logs, len(self.train_dataset), batch_dict)
+                mean_validation_logs = mean_dict(validation_logs, len(self.validation_dataset), val_batch_dict)
                 epoch_logs = {"train": {"raw": train_logs, "mean": mean_train_logs}, "validation": {"raw": validation_logs, "mean": mean_validation_logs}}
                 if target is not None:
                     t = parse_formula_strip(epoch_logs, target)
+
                     if t < best_target:
                         best_dict = complete_model.state_dict()
                         best_target = t
-                self.logged_data = TrainingStage._stack_dict(self.logged_data, epoch_logs)
+                self.logged_data = stack_dict(self.logged_data, epoch_logs)
             self.run_on_epoch()
 
             if verbose:
@@ -373,21 +243,26 @@ class TrainingStage:
                 for k, v in run_info["print_each_epoch"].items():
                     print(f"{k}: {parse_formula_strip(epoch_logs, v)}")
 
+        if target is not None:
+            complete_model.load_state_dict(best_dict, strict=True)
+
         complete_model.eval()
         if "test" in run_info:
             test_logs = {}
             if verbose:
                 test_iterable = tqdm(test_loader, desc="Testing: ")
             with torch.inference_mode():
-                if target is not None:
-                    complete_model.load_state_dict(best_dict, strict=True)
                 for datum in test_iterable:
-                    data_dict = self._get_data_dict(datum, device)
+                    data_dict = get_data_dict(self.data_order, datum, device)
                     test_outputs, test_batch_dict = self.run_func("test", run_info, **data_dict)
-                    test_logs = TrainingStage._append_dict(test_logs, TrainingStage._dict_to_numpy(test_outputs), test_batch_dict)
-                mean_test_logs = self._mean_dict(test_logs, len(self.test_dataset), test_batch_dict)
+                    test_logs = append_dict(test_logs, dict_to_numpy(test_outputs), test_batch_dict)
+                mean_test_logs = mean_dict(test_logs, len(self.test_dataset), test_batch_dict)
                 self.logged_data = {**self.logged_data, "test": {"raw": test_logs, "mean": mean_test_logs}, **test_logs}
         self.logged_data = self.logged_data | {"final_optim": self.optimiser}
+
+
+
+
 
 
 class ExperimentRun(ABC):

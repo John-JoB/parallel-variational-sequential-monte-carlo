@@ -1,10 +1,26 @@
 
 class ParameterSet(object):
-    def __init__(self, module, recurse = True, _in_list=None):
+
+    def __new__(cls, *modules, recurse = True, _in_list=None):
+        if _in_list is not None:
+            ob =  super().__new__(cls)
+            ob.__init__(None, True, _in_list=_in_list)
+            return ob
+        ob_list = []
+        c_mod = super().__new__(cls)
+        c_mod.__init__(modules[0], recurse = recurse, _in_list = None)
+        for i in range(1, len(modules)):
+            next_mod = super().__new__(cls)
+            next_mod.__init__(modules[i], recurse = recurse, _in_list = None)
+            c_mod = c_mod + next_mod
+        return c_mod
+
+
+    def __init__(self, modules, recurse = True, _in_list=None):
         if _in_list is not None:
            self.param_list = _in_list
         else:
-            self.param_list = list(module.parameters(recurse))
+            self.param_list = list(modules.parameters(recurse))
 
     def __iter__(self):
         return self.param_list.__iter__()

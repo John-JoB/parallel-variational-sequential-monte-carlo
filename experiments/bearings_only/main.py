@@ -4,7 +4,7 @@ import pydpf
 import models.bearings_only.learnt_model as bo_learnt
 import torch
 from mdps import MDPS
-from experiments.common.training_stage import VanillaPydpfRun, Trainer, ParallelRun, TrainingStage, ExperimentRun
+from experiments.common.training import VanillaPydpfRun, Trainer, ParallelRun, TrainingStage, ExperimentRun
 
 
 class masked_loss(pydpf.Module):
@@ -16,7 +16,7 @@ class masked_loss(pydpf.Module):
 
     def forward(self, t, **data):
         temp = self.base_loss(t=t, **data)
-        if (t + 1) % self.keep_mod == 0:
+        if t  % self.keep_mod == 0:
             return temp
         return torch.full_like(temp, self.identity)
 

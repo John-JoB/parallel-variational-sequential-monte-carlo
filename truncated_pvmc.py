@@ -4,13 +4,16 @@ from pydpf import Module
 from torch import Tensor
 import pydpf
 from math import log
+import einops
+from parallel_smoother_new import ParallelSmoother
 
 
 
-class ProposalRunner(Module):
-    def __init__(self, proposal):
+class Truncated(Module):
+    def __init__(self, proposal, SSM):
         super().__init__()
         self.proposal = proposal
+        self.SSM = SSM
 
     @staticmethod
     def print_grad(grad):
@@ -37,7 +40,22 @@ class ProposalRunner(Module):
         if time is not None:
             time = time[:time_extent + 1]
         state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
-        weights = torch.zeros_like(prop_density) - log(n_particles)
+        batched_data = ParallelSmoother._get_batched_dict(ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+        state_repeat = einops.repeat(state[1:], 't b n d -> (t b) (n m) d', m=n_particles)
+        prev_state_repeat = einops.repeat(state[:-1], 't b n d -> (t b) (m n) d', m=n_particles)
+        obs_score = self.SSM.observation_model.score(**batched_data)
+        del (batched_data["state"])
+        t_zero_data = ParallelSmoother._get_time_zero_data(state=state, observation=observation, control=control, time=time, series_metadata=series_metadata)
+        prior_density = self.SSM.prior_model.log_density(**t_zero_data)
+        dynamic_density = self.SSM.dynamic_model.log_density(state=state_repeat, prev_state=prev_state_repeat, **batched_data)
+        obs_score = einops.rearrange(obs_score, "(t b) n -> t b n", t=time_extent + 1)
+        prop_density = einops.rearrange(prop_density, "t b n -> t b n", t=time_extent + 1)
+        dynamic_density = einops.rearrange(dynamic_density, "(t b) (m n) -> t b n m", t=time_extent, m=n_particles)
+        dynamic_density = torch.logsumexp(dynamic_density, dim=-1)
+        dynamic_density = torch.cat([prior_density.unsqueeze(0), dynamic_density], dim=0)
+        weights = obs_score + dynamic_density - prop_density
+        weights, l = pydpf.normalise(weights)
+
         time_zero_l = torch.nan
         kernels = torch.nan
         if isinstance(aggregation_function, dict):

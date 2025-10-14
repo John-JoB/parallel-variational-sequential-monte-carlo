@@ -41,8 +41,8 @@ class MSE(Module):
         self.marginal_expec = MarginalSmoothingMean(function)
 
     def forward(self, weight, ground_truth, **data):
-        est = self.marginal_expec(weight=weight, ground_truth=ground_truth **data)
-        return torch.mean(torch.sum((est - ground_truth)**2, dim=-1), dim =-1)
+        est = self.marginal_expec(weight=weight, ground_truth=ground_truth, **data)
+        return torch.sum((est - ground_truth)**2, dim=-1)
 
 class NegativeKernelLogLikelihood(Module):
     """Get the negative log data likelihood per-timestep under a kernel density estimator.

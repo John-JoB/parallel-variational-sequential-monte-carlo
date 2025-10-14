@@ -9,14 +9,14 @@ class DynamicsModel(Module):
     def __init__(self, generator):
         super().__init__()
         self.dist = pydpf.StandardGaussian(4, generator)
-        self.encoder = FCNN(2, 8, 8, "Relu", None, 3, device = generator.device)
+        self.encoder = FCNN(4, 8, 8, "Relu", None, 3, device = generator.device)
         self.forward_transform = FCNN(12, 4, 8, "Relu", "sigmoid", 3, device = generator.device)
         self.scale_factor = torch.tensor([[[5., 5., 2., 2.]]], dtype=torch.float32, device = generator.device)
 
 
     def sample(self, prev_state, **data):
         transformed_state = torch.cat([prev_state[..., 0:2], torch.sin(prev_state[..., -1:]), torch.cos(prev_state[..., -1:])], dim=-1)
-        encoded_state = self.encoder(transformed_state[..., 2:].contiguous())
+        encoded_state = self.encoder(transformed_state)
         noise = self.dist.sample((encoded_state.size(0), encoded_state.size(1)))
         transform_input = torch.cat([encoded_state, noise], dim=-1)
         residual_state = ((self.forward_transform(transform_input) * 2.) - 1.) * self.scale_factor

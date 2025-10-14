@@ -15,7 +15,7 @@ class true_prior(Module):
         pos_maxes = pydpf.multiple_unsqueeze(torch.tensor([10, 10, torch.pi], device=self.device),2, 0 )
         pos_mins = pydpf.multiple_unsqueeze(torch.tensor([-10, -10, -torch.pi], device=self.device), 2, 0)
         target_maxes = pydpf.multiple_unsqueeze(torch.tensor([10, 10], device=self.device),2, 0 )
-        target_mins = pydpf.multiple_unsqueeze(torch.tensor([10, 10], device=self.device), 2, 0)
+        target_mins = pydpf.multiple_unsqueeze(torch.tensor([-10, -10], device=self.device), 2, 0)
         self.total_maxes = torch.cat([pos_maxes, target_maxes], dim=-1)
         self.total_mins = torch.cat([pos_mins, target_mins], dim=-1)
         self.speed_probs = torch.tensor([0.5, 0.5], device=self.device)
@@ -74,9 +74,9 @@ class true_dynamics(Module):
         target_state = prev_state[..., 3:]
         count = prev_state[..., 6:]
         new_target_state = self.new_target(prev_state.size(1), prev_state.size(0))
-        at_target = torch.linalg.vector_norm(loc - target) < 0.5
+        at_target = torch.linalg.vector_norm(loc - target, axis=-1) < 0.5
         over_max_steps = count > self.max_steps
-        target_state = torch.where(torch.logical_or(at_target, over_max_steps), new_target_state, target_state)
+        target_state = torch.where(torch.logical_or(at_target.unsqueeze(-1), over_max_steps), new_target_state, target_state)
         target = target_state[..., 0:2]
         speed = target_state[..., 2:3]
         target_state[..., 3] = target_state[..., 3] + 1
