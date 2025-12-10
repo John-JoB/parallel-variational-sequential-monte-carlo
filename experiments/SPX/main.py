@@ -1,92 +1,85 @@
-from ast import Param
-
 import pydpf
 from experiments.common.parameter_set import ParameterSet
 import models.SPX.model as model
 import torch
-import matplotlib
-from experiments.common.optimisers import OptimList
-
+from models.SPX.TCVAE_model import TCVAE_Prior, TCVAE_Decoder, TCVAE_Encoder
+from time_causal_VAE import TCVAE
+from experiments.SPX.tcvae_run import TCVAERun
+from dmm import DMM
 from parallel_smoother_new import ParallelSmoother
 from smoother_outputs import dSMC_ELBO, VAE_ELBO
 from experiments.common.training import Trainer, TrainingStage, VanillaPydpfRun
 from experiments.SPX.simulate_paths import plot_paths
 import einops
-
-#matplotlib.use('TkAgg')
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-class weird_prop(pydpf.Module):
-    def __init__(self, proposal, dynamic):
-        super().__init__()
-        self.proposal = proposal
-        self.dynamic = dynamic
 
-    def forward(self, n_particles, observation, series_metadata, **kwargs):
-        prev_state, prop_log_density = self.proposal(n_particles, observation, series_metadata, **kwargs)
-        #return prev_state, prop_log_density
-        flat_prev_state = einops.rearrange(prev_state[:-1], 't b n d -> (t b) n d')
-        flat_state = self.dynamic.sample(prev_state=flat_prev_state)
-        log_density = torch.empty((observation.size(0), observation.size(1), n_particles), device=observation.device)
-        log_density[0] = prop_log_density[0]
-        state = torch.empty_like(prev_state)
-        state[0] = prev_state[0]
-        #print(flat_state.shape)
-        state[1:] = einops.rearrange(flat_state, '(t b) n d -> t b n d', t = observation.size(0)-1)
-        flat_density = self.dynamic.log_density(prev_state = flat_prev_state, state = flat_state)
-        log_density[1:] = einops.rearrange(flat_density, '(t b) n -> t b n', t = observation.size(0)-1) + prop_log_density[:-1]
-        #log_density[1:] = prop_log_density[:-1]
-        return state, log_density
+
+#options experiments = ["PVMC, VAE, TCVAE, Soft, DMM"]
+experiments = ["TCVAE"]
 
 
 
-def make_model(dx, use_vix = False):
+
+
+def make_model(dx, use_dmm_prop=False):
     gen = torch.Generator(device=device).manual_seed(0)
-    prior_model = model.prior_model(dx, gen, use_vix=use_vix, depth=3, hidden_dim=8)
+    prior_model = model.prior_model(dx, gen)
     dynamic_model = model.dynamic_model(dx, gen, 3, 3, 32)
-    #dynamic_model = model.very_simple_dynamic(dx, gen)
-    #dynamic_model = model.dynamic_model2(dx, 8, 64, gen)
-    #dynamic_model = model.dynamic_model3(dx, gen, 7, 128, 24)
-    #observation_model = model.observation_model(dx, 7, 32, gen)
-    observation_model = model.observation_model3(dx, gen, 7, 64, 16)
-    #observation_model = model.observation_model3(dx, gen, 1, 4, 16)
-    proposal_model = model.proposal_model(dx, gen, True)
+    observation_model = model.observation_model(dx, gen, 7, 64, 16)
+    if use_dmm_prop:
+        proposal_model = model.dmm_proposal_model(dx, gen)
+    else:
+        proposal_model = model.proposal_model(dx, gen)
     return prior_model, dynamic_model, observation_model, proposal_model
 
 def make_ssm(prior_model, dynamic_model, observation_model):
     return pydpf.FilteringModel(prior_model=prior_model, dynamic_model=dynamic_model, observation_model=observation_model)
 
 
+def make_dmm(dx):
+    prior_model, dynamic_model, observation_model, proposal_model = make_model(dx, True)
+    return DMM(proposal_model, make_ssm(prior_model, dynamic_model, observation_model))
 
-def make_pvmc(dx, use_vix = False):
-    prior_model, dynamic_model, observation_model, proposal_model = make_model(dx, use_vix=use_vix)
+def make_tcvae(dx):
+    gen = torch.Generator(device=device).manual_seed(0)
+    prior = TCVAE_Prior(dx, 250, 3, gen, 119)
+    encoder = TCVAE_Encoder(dx, 16, 2, device)
+    decoder = TCVAE_Decoder(dx, 16, 2, device)
+    return TCVAE(encoder, decoder, prior, dx, gen, 0.04)
+
+
+def make_pvmc(dx):
+    prior_model, dynamic_model, observation_model, proposal_model = make_model(dx)
     SSM = make_ssm(prior_model, dynamic_model, observation_model)
     return ParallelSmoother(proposal_model, SSM)
 
-def make_dummy_pvmc(dx, pvmc):
-    ssm = make_ssm(model.dummy_prior(dx, torch.Generator(device = device).manual_seed(0)), model.dummy_dynamic(dx, torch.Generator(device = device).manual_seed(0)), pvmc.SSM.observation_model)
-    return ParallelSmoother(pvmc.proposal, ssm)
+def make_soft_dpf(dx):
+    prior_model, dynamic_model, observation_model, proposal_model = make_model(dx)
+    SSM = make_ssm(prior_model, dynamic_model, observation_model)
+    #return pydpf.SoftDPF(SSM, resampling_generator= SSM.observation_model.gen)
+    return pydpf.MarginalStopGradientDPF(SSM, resampling_generator=SSM.observation_model.gen)
 
-def make_dummy_pvmc2(dx, pvmc):
-    ssm = make_ssm(model.dummy_prior(dx, torch.Generator(device = device).manual_seed(0)), model.dummy_dynamic(dx, torch.Generator(device = device).manual_seed(0)), pvmc.SSM.observation_model)
-    weird_p = weird_prop(pvmc.proposal, pvmc.SSM.dynamic_model)
-    return ParallelSmoother(weird_p, ssm)
 
 def make_filter(dx):
     prior_model, dynamic_model, observation_model, proposal_model = make_model(dx)
     SSM = make_ssm(prior_model, dynamic_model, observation_model)
     return pydpf.MarginalStopGradientDPF(SSM, torch.Generator(device = device).manual_seed(0))
 
-def make_run_info(dataset, SSM):
-    train_info = {"n_particles": 32,
+def make_run_info(dataset, SSM, vae = False):
+    if vae:
+        loss = VAE_ELBO()
+    else:
+        loss = dSMC_ELBO()
+    train_info = {"n_particles": 16,
                   "batch_size": 32,
                   "collate_fn": dataset.collate,
                   "shuffle": True,
                   "time_extent": 119,
-                  "output_function": {"ELBO": dSMC_ELBO(), "reconstruction": GMRecon(SSM),}} #"proprecon": GMDoubleRecon(SSM)}}
+                  "output_function": {"ELBO": loss, "reconstruction": GMRecon(SSM),}}
     info = {"train": train_info,
             "loss": f"(- time_average.ELBO / {len(dataset.observation)})",
             "print_each_epoch": {"Train ELBO": "train.mean.time_average.ELBO", "Train reconstruction": "train.mean.time_average.reconstruction"},# "Prop reconstruction": "train.mean.time_average.proprecon"},
-            "epochs": 20,
+            "epochs": 100,
             "device": device,
             "target": f"-train.mean.time_average.ELBO"
             }
@@ -94,19 +87,34 @@ def make_run_info(dataset, SSM):
     return info
 
 def make_filter_run_info(dataset, SSM):
-    train_info = {"n_particles": 50,
-                  "batch_size": 64,
+    train_info = {"n_particles": 16,
+                  "batch_size": 32,
                   "collate_fn": dataset.collate,
+                  "shuffle": True,
                   "time_extent": 119,
                   "output_function": {"ELBO": pydpf.LogLikelihoodFactors()}}
     info = {"train": train_info,
-            "loss": f"(- time_average.ELBO)",
-            "print_each_epoch": {"Train ELBO": "train.mean.time_average.ELBO"},
-            "epochs": 1,
+            "loss": f"-time_average.ELBO",
+            "print_each_epoch": {"Train ELBO": f"train.mean.time_average.ELBO.item() * {len(dataset.observation)}",},
+            "epochs": 100,
             "device": device,
             "target": f"-train.mean.time_average.ELBO"
             }
 
+    return info
+
+def make_tcvae_run_info(dataset):
+    train_info = {"batch_size": 32,
+                  "collate_fn": dataset.collate,
+                  "shuffle": True,
+                  "time_extent": 119}
+    info = {"train": train_info,
+            "loss": f"time_average.l1_loss + time_average.kld",
+            "print_each_epoch": {"Train l1_loss": f"train.mean.time_average.l1_loss", "Train kld": f"train.mean.time_average.kld"},
+            "epochs": 100,
+            "device": device,
+            "target": f"train.mean.time_average.l1_loss + train.mean.time_average.kld"
+            }
     return info
 
 class SimpleRecon(pydpf.Module):
@@ -131,12 +139,17 @@ class GMRecon(pydpf.Module):
         self.net = self.model.net
 
     def forward(self, state, observation, **data):
-        dist_info = self.net(state)
-        locs = dist_info[..., :dist_info.size(-1) // 2]
-        weights = dist_info[..., dist_info.size(-1) // 2:]
-        weights, _ = pydpf.normalise(weights)
-        mean_obs = torch.sum(torch.exp(weights) * locs, dim=-1)
-        return (torch.mean(mean_obs, dim=-1) - observation.squeeze(-1))**2
+        try:
+            dist_info = self.net(state)
+            locs = dist_info[..., :dist_info.shape[-1]//2]
+            weights = dist_info[..., dist_info.shape[-1]//2:]/self.model.temperature
+            weights = torch.softmax(weights, dim=-1)
+            mean_obs = torch.sum(weights * locs, dim=-1)
+            return (torch.mean(mean_obs, dim=-1) - observation.squeeze(-1))**2
+        except:
+            return torch.full((120, 32), torch.nan, device = state.device)
+
+
 
 class GMDoubleRecon(pydpf.Module):
     need_weight = False
@@ -161,24 +174,31 @@ class run_each_epoch():
         self.model.beta_observation = (self.model.beta_observation - 1) * 0.9 + 1
         self.model.beta_prior = 20.
 
-def make_trainer_routine(model, dataset, dummy_model = None):
-    params = ParameterSet(model)
-    optim = torch.optim.Adam([{"params": params - ParameterSet(model.proposal), "lr":1e-3}], lr=1e-3)
-    #optim = torch.optim.AdamW(params, lr=1e-3, weight_decay=1e-2)
-    runner = VanillaPydpfRun(model)
-    if dummy_model is not None:
-        dummy_optim = torch.optim.Adam(params, lr=1e-3)
-        dummy_optim2 = torch.optim.Adam(params - ParameterSet(model.proposal), lr=1e-5)
-        dummy_runner = VanillaPydpfRun(dummy_model)
-        dummy_stage = TrainingStage(dummy_runner, dataset, None, None, dummy_optim, ["observation", "series_metadata"], run_on_epoch=run_each_epoch(dummy_model))
-        dummy_model_2 = make_dummy_pvmc2(8, model)
-        dummy_runner_2 = VanillaPydpfRun(dummy_model_2)
-        dummy_stage_2 = TrainingStage(dummy_runner_2, dataset, None, None, dummy_optim2, ["observation", "series_metadata"])
-   #obs_params = ParameterSet(model.SSM.observation_model)
-    #prop_params = ParameterSet(model.proposal)
+class check_each_epoch():
+    def __init__(self, pvmc, mean, sd, dataset, experiment):
+        self.model = pvmc
+        self.count = 0
+        self.mean = mean
+        self.sd = sd
+        self.dataset = dataset
+        self.experiment = experiment
 
-    stage = TrainingStage(runner, dataset, None, None, optim, ["observation", "series_metadata"])
-    trainer = Trainer(model, stages=[dummy_stage, stage])
+    def __call__(self):
+        if self.count % 5 == 0:
+            plot_paths(self.model.SSM, 360, self.mean, self.sd, self.dataset, f"{self.experiment}_3", self.count+1)
+        self.model.beta_dynamic = 0.05 + 0.01*self.count
+        self.count += 1
+
+def make_trainer_routine(alg, dataset, dummy_model = None, mean= 0, sd=0, experiment="pvmc"):
+    params = ParameterSet(alg)
+    optim = torch.optim.Adam(params, lr=1e-4)
+    if experiment == "TCVAE":
+        runner = TCVAERun(alg)
+    else:
+        runner = VanillaPydpfRun(alg)
+
+    stage = TrainingStage(runner, dataset, None, None, optim, ["observation", "series_metadata"], run_on_epoch=check_each_epoch(alg, mean, sd, dataset, experiment))
+    trainer = Trainer(alg, stages=[stage])
     return trainer
 
 def make_dataset():
@@ -194,25 +214,58 @@ def from_log_ret(observation, **data):
     log_ret = torch.cumsum(observation, dim=0)
     return torch.exp(log_ret)
 
+
+def make_alg(exper):
+    match exper:
+        case "PVMC":
+            return make_pvmc(4)
+        case "DMM":
+            return make_dmm(4)
+        case "VAE":
+            return make_pvmc(4)
+        case "Soft":
+            return make_soft_dpf(4)
+        case "TCVAE":
+            return make_tcvae(4)
+
+def make_info(exper, dataset, SSM):
+    match exper:
+        case "PVMC":
+            return make_run_info(dataset, SSM)
+        case "DMM":
+            return make_run_info(dataset, SSM, True)
+        case "VAE":
+            return make_run_info(dataset, SSM, True)
+        case "Soft":
+            return make_filter_run_info(dataset, SSM)
+        case "TCVAE":
+            return make_tcvae_run_info(dataset)
+
 if __name__ == "__main__":
-    dataset = make_dataset()
-    dataset.apply(to_log_ret)
-    #dataset.apply(lambda observation, **data: torch.log(observation))
-    obs = dataset.observation
-    mean_obs = torch.mean(obs, dim=(0,1)).squeeze()
-    sd_obs = torch.sqrt(torch.var(obs, dim=(0,1)).squeeze())
-    dataset.apply(lambda observation, **data: (mean_obs - observation)/sd_obs)
-    obs = dataset.observation
-    pvmc = make_pvmc(4, True)
-    dummy_pvmc = make_dummy_pvmc(4, pvmc)
-    dummy_pvmc.beta_observation = 10.
-    run_info = [make_run_info(dataset, dummy_pvmc.SSM), make_run_info(dataset, pvmc.SSM)]
-    #run_info = [make_filter_run_info(dataset, pvmc.SSM)]
-    trainer_routine = make_trainer_routine(pvmc, dataset, dummy_pvmc)
-    trainer_routine.fit("run", run_info, False)
-    ssm = pvmc.SSM
-    for n, p in ssm.named_parameters():
-        print(n)
-        print(p.mean())
-    plot_paths(ssm, pvmc.proposal, 360, mean_obs, sd_obs, dataset)
+    for experiment in experiments:
+        dataset = make_dataset()
+        dataset.apply(to_log_ret)
+        obs = dataset.observation
+        mean_obs = torch.mean(obs, dim=(0,1)).squeeze()
+        sd_obs = torch.sqrt(torch.var(obs, dim=(0,1)).squeeze())
+        dataset.apply(lambda observation, **data: (observation - mean_obs)/sd_obs)
+        obs = dataset.observation
+        alg = make_alg(experiment)
+        if not (experiment == "Soft" or experiment == "TCVAE"):
+            alg.beta_dynamic = 0.05
+        if experiment == "TCVAE":
+            ssm = alg
+            run_info = [make_info(experiment, dataset, None)]
+        else:
+            ssm = alg.SSM
+            ps = []
+            for p in alg.proposal.parameters():
+                ps.append(p.flatten())
+            ps = torch.cat(ps, dim=0)
+            print(ps.shape)
+            run_info = [make_info(experiment, dataset, ssm)]
+        trainer_routine = make_trainer_routine(alg, dataset, dummy_model=None, mean=mean_obs, sd=sd_obs, experiment=experiment)
+        trainer_routine.fit("run", run_info, False)
+        alg.update()
+        plot_paths(ssm, 360, mean_obs, sd_obs, dataset, f"{experiment}_3", 100)
 

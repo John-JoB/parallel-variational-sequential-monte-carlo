@@ -71,10 +71,10 @@ class ConvProposal(pydpf.Module):
         else:
             self.net = None
         layers = []
-        in_dims = [dy, 4*dx, 4*dx]
+        in_dims = [dy, 16, 16, 16]
         for di in range(len(in_dims) - 1):
-            layers += [{"type": "conv", "in_channels": in_dims[di], "out_channels": in_dims[di+1], "kernel_size": 5, "kernel_offset":0, "left_input_size": 9, "right_input_size": 9, "activation": "relu"},
-                       {"type": "linear", "in_features": in_dims[di + 1], "out_features": in_dims[di + 1], "bias": True, "device": generator.device, "activation": "relu"}]
+            layers += [{"type": "conv", "in_channels": in_dims[di], "out_channels": in_dims[di+1], "kernel_size": 7, "kernel_offset":0, "left_input_size": 9, "right_input_size": 9, "activation": "relu"}]#,
+                       #{"type": "linear", "in_features": in_dims[di + 1], "out_features": in_dims[di + 1], "bias": True, "device": generator.device, "activation": "relu"}]
         layers += [{"type": "conv", "in_channels": in_dims[-1], "out_channels": dx, "kernel_size": 9, "kernel_offset":0, "left_input_size": 9, "right_input_size": 9, "activation": "id"}]
         self.conv = ConvEncoder(layers, self.gen.device)
         self.dist = pydpf.StandardGaussian(dx, generator)
@@ -100,3 +100,26 @@ class ConvProposal(pydpf.Module):
         #print(state[0, 0])
         return state, self.dist.log_density(sample) - self.log_det
 
+class proposal_model(pydpf.Module):
+    def __init__(self, dx, dy, time_extent, generator):
+        super().__init__()
+        self.dx = dx
+        self.gen = generator
+        layers = []
+        in_dims = [dy, 16, 16, 16]
+        for di in range(len(in_dims) - 1):
+            layers += [{"type": "conv", "in_channels": in_dims[di], "out_channels": in_dims[di+1], "kernel_size": 7, "kernel_offset":0, "left_input_size": 9, "right_input_size": 9, "activation": "relu"},]
+        layers += [{"type": "conv", "in_channels": in_dims[-1], "out_channels": 2*dx, "kernel_size": 7, "kernel_offset":0, "left_input_size": 9, "right_input_size": 9, "activation": "id"}]
+        self.conv = ConvEncoder(layers, self.gen.device)
+        self.dist = pydpf.StandardGaussian(dx, generator)
+
+    def forward(self, n_particles, observation, series_metadata, **data):
+        sample = self.dist.sample((observation.size(0), observation.size(1), n_particles))
+        mean_sd = self.conv(observation)
+        log_sd = torch.nn.functional.tanh(mean_sd[:, :, None, self.dx:])
+        sd = torch.exp(log_sd)
+        mean = mean_sd[:, :, None, :self.dx]
+        state = sample * sd + mean
+        #stl
+        sample_stl = (state - mean.detach()) / sd.detach()
+        return state, (self.dist.log_density(sample_stl) - torch.sum(log_sd.detach(), dim=-1))

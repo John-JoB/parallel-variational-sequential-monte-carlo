@@ -6,7 +6,10 @@ class GaussianDynamic(pydpf.Module):
         device = generator.device
         dynamic_matrix = 0.38 ** (torch.abs(torch.arange(dx, device=device).unsqueeze(1) - torch.arange(dx, device=device).unsqueeze(0)) + 1)
         dynamic_offset = torch.zeros(dx, device=device)
-        return pydpf.LinearGaussian(weight=dynamic_matrix, bias=dynamic_offset, cholesky_covariance=torch.eye(dx, device=device), generator=generator)
+        return pydpf.LinearGaussian(weight=torch.nn.Parameter(dynamic_matrix, requires_grad=False),
+                                    bias=torch.nn.Parameter(dynamic_offset, requires_grad=False),
+                                    cholesky_covariance=torch.nn.Parameter(torch.eye(dx, device=device), requires_grad=False),
+                                    generator=generator)
 
 class GaussianObservation(pydpf.Module):
     def __new__(cls, dx:int, dy:int, generator):
@@ -14,13 +17,18 @@ class GaussianObservation(pydpf.Module):
         observation_matrix = torch.zeros((dy, dx), device=device)
         for i in range(dy):
             observation_matrix[i, i] = 1
-        observation_offset = torch.zeros(dy, device=device)
-        return pydpf.LinearGaussian(weight=observation_matrix, bias=observation_offset, cholesky_covariance=torch.eye(dy, device=device), generator=generator)
+        observation_offset = torch.nn.Parameter(torch.zeros(dy, device=device), requires_grad=False)
+        return pydpf.LinearGaussian(weight=torch.nn.Parameter(observation_matrix, requires_grad=False),
+                                    bias=observation_offset,
+                                    cholesky_covariance=torch.nn.Parameter(torch.eye(dy, device=device), requires_grad=False),
+                                    generator=generator)
 
 class GaussianPrior(pydpf.Module):
     def __new__(cls, dx:int, generator):
         device = generator.device
-        return pydpf.MultivariateGaussian(torch.zeros(dx, device=device), torch.eye(dx, device=device), generator=generator)
+        return pydpf.MultivariateGaussian(torch.nn.Parameter(torch.zeros(dx, device=device), requires_grad=False),
+                                          torch.nn.Parameter(torch.eye(dx, device=device), requires_grad=False),
+                                          generator=generator)
 
 class GaussianOptimalProposal(pydpf.Module):
     def __init__(self, dx:int, dy:int, generator):

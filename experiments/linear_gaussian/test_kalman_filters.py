@@ -13,14 +13,15 @@ from experiments.common.testing import Test_Runner
 from parallel_smoother_new import ParallelSmoother
 from proposal_to_output import ProposalRunner
 from truncated_pvmc import Truncated
-from smoother_outputs import MSE, VAE_ELBO, NegativeKernelLogLikelihood, MarginalSmoothingMean, dSMC_ELBO
+from smoother_outputs import MSE, MarginalSmoothingMean, dSMC_ELBO
 from pathlib import Path
 from experiments.common.training import TrainingStage, Trainer, VanillaPydpfRun
 from two_filter_smoother import TwoFilter
+from dSMC import dSMC
 
 import numpy as np
 
-time_extent = 50
+time_extent = 500
 
 def position_error(pvmc_state, smoother_state):
     return np.mean(np.sum((pvmc_state - smoother_state)**2, axis = -1))
@@ -53,7 +54,7 @@ def make_pvmc(dx, dy, generator):
 def make_learned_pvmc(dx, dy, generator):
     pm, dm, om = make_true_SSM(dx, dy, generator)
     ssm = FilteringModel(prior_model=pm, dynamic_model=dm, observation_model=om)
-    return ParallelSmoother(learned_model.ConvProposal(dx, dy, time_extent, generator), ssm)
+    return ParallelSmoother(learned_model.proposal_model(dx, dy, time_extent, generator), ssm)
 
 def make_tfs(dx, dy, generator):
     pm, dm, om = make_true_SSM(dx, dy, generator)
@@ -77,6 +78,11 @@ def make_filters(prior_model, dynamic_model, observation_model):
     p_kalman_filter = ParallelKalmanFilter(prior_model, dynamic_model, observation_model)
     p_kalman_smoother = ParallelKalmanSmoother(prior_model, dynamic_model, observation_model)
     return kalman_filter, p_kalman_filter, p_kalman_smoother
+
+def make_dsmc(dx, dy, generator):
+    pm, dm, om = make_true_SSM(dx, dy, generator)
+    ssm = FilteringModel(prior_model=pm, dynamic_model=dm, observation_model=om)
+    return dSMC(learned_model.KalmanProposal(dx, dy, generator, True, True), ssm, generator)
 
 def make_pvmc_test_run(pvmc, dataset):
     pvmc_run = VanillaPydpfRun(pvmc)
@@ -108,7 +114,7 @@ def make_pvmc_info(dataset):
     run_info = {"return": {"mean" : "mean", "likelihood" : "likelihood", "MSE" : "MSE", "time" : "time"},
                 "n_particles": 64,
                 "shuffle": False,
-                "batch_size": 64,
+                "batch_size": 16,
                 "collate_fn": dataset.collate,
                 "time_extent": time_extent,
                 "device": "cuda:0",
@@ -156,7 +162,7 @@ def make_trainer_info(train_set, validation_set, test_set):
 
 def make_trainer_routine(model, train_set, validation_set, test_set):
     runner = VanillaPydpfRun(model)
-    optim = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    optim = torch.optim.Adam(model.parameters())
     stage = TrainingStage(runner, train_set, validation_set, test_set, optim, ["ground_truth", "observation"])
     trainer = Trainer(model, stages=[stage])
     return trainer
@@ -168,23 +174,28 @@ if __name__ == '__main__':
     kalman, p_filter, p_smoother = make_filters(pm, dm, om)
     pvmc = make_pvmc(5, 5, torch.Generator(device))
     tfs = make_tfs(5, 5, torch.Generator(device))
+    dsmc_m = make_dsmc(5,  5, torch.Generator(device))
     learned_pvmc = make_learned_pvmc(5, 5, torch.Generator(device))
     pvmc_train = make_trainer_routine(learned_pvmc, t_dataset, v_dataset, dataset)
     train_info = make_trainer_info(t_dataset, v_dataset, dataset)
     pvmc_train.fit("run", [train_info], False)
     kalman_t, p_filter_t, p_smoother_t, pvmc_t, tfs_t = make_test_runs(kalman, p_filter, p_smoother, pvmc, tfs, dataset)
     learned_pvmc_t = make_pvmc_test_run(learned_pvmc, dataset)
+    dSMC_t = make_pvmc_test_run(dsmc_m, dataset)
 
     info = make_info(dataset)
     pvmc_info = make_pvmc_info(dataset)
     tfs_info = make_tfs_info(dataset)
+    dsmc_info = make_tfs_info(dataset)
 
     del t_dataset, v_dataset
-    experiments = {"Kalman Filter": lambda: p_filter_t.test("p_filter", info),
+    experiments = {"dSMC": lambda: dSMC_t.test("dSMC", dsmc_info),
+                    "Kalman Filter": lambda: p_filter_t.test("p_filter", info),
                    "RTS Smoother": lambda: p_smoother_t.test("p_smoother", info),
                    "PVMC Oracle": lambda: pvmc_t.test("pvmc_oracle", pvmc_info),
                    "PVMC": lambda: learned_pvmc_t.test("pvmc", pvmc_info),
-                   "TFS": lambda: tfs_t.test("tfs", tfs_info)}
+                   "TFS": lambda: tfs_t.test("tfs", tfs_info),
+                   }
 
     results_df = pd.DataFrame(index=pd.Index(experiments.keys(), name="Method"), columns = ["e_x", "e_l", "time"])
     results_dict = {}
@@ -211,7 +222,7 @@ if __name__ == '__main__':
             pos_error = position_error(res["mean"], smoother_mean)
             if method == "Kalman Filter":
                 res["likelihood"] = np.sum(res["likelihood"], axis = 0)
-            #print(res["likelihood"][:10])
+            print((res["likelihood"] - smoother_log_likelihood)[:10] )
             lik_error = likelihood_error(res["likelihood"], smoother_log_likelihood)
             print(f"MSE: {pos_error}")
             print(f"Likelihood: {lik_error}")

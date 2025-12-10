@@ -32,7 +32,10 @@ class VAE_ELBO(Module):
         super().__init__()
 
     def forward(self, kernel, initial_likelihood, **empty):
-        return torch.sum(torch.mean(kernel, dim=(-1,-2)) + torch.mean(initial_likelihood, dim=(-1)).unsqueeze(0), dim=0)
+        if kernel.dim() == 4:
+            return torch.mean(torch.sum(torch.mean(kernel, dim=-1), dim=0) + initial_likelihood, dim=-1)
+        else:
+            return torch.mean(torch.sum(kernel, dim=0) + initial_likelihood, dim=-1)
 
 
 class MarginalSmoothingMean(Module):
@@ -55,7 +58,7 @@ class MSE(Module):
         est = self.marginal_expec(weight=weight, ground_truth=ground_truth, **data)
         return torch.sum((est - ground_truth)**2, dim=-1)
 
-class NegativeKernelLogLikelihood(Module):
+class KernelLogLikelihood(Module):
     """Get the negative log data likelihood per-timestep under a kernel density estimator.
         This function applies a kernel density estimator over the particles and calculates the log likelihood of the ground truth given the KDE.
 
@@ -72,4 +75,4 @@ class NegativeKernelLogLikelihood(Module):
 
     def forward(self, *, state: Tensor, weight: Tensor, ground_truth, **kwargs):
         """Get the negative log data likelihood factor under the a KDE and given a time-step"""
-        return -self.KDE.log_density(ground_truth, state, weight)
+        return self.KDE.log_density(ground_truth, state, weight)

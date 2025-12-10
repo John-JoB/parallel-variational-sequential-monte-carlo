@@ -1,3 +1,4 @@
+import numpy as np
 import pydpf
 from pydpf import Module
 import torch
@@ -7,12 +8,13 @@ from math import log, ceil
 import opt_einsum as oe
 from parallel_scan import parallel_associative_scan, parallel_associative_reduce
 from typing import Callable
+from models.generic_nets.FCNN import FCNN
 
 from smoother_outputs import dSMC_ELBO, VAE_ELBO
 
 
 class ParallelSmoother(Module):
-    def __init__(self, proposal, SSM):
+    def __init__(self, proposal, SSM, clip_likelihoods_for_stability = False, control_net = None):
         super().__init__()
         self.proposal = proposal
         self.SSM = SSM
@@ -21,6 +23,11 @@ class ParallelSmoother(Module):
         self.beta_prior = 1.
         self.beta_proposal = 1.
         self.mode = "model"
+        self.clip_likelihoods = clip_likelihoods_for_stability
+        self.control_net = control_net
+        self.use_control_var = True
+        if control_net is None:
+            self.use_control_var = False
 
     einsum_letters = " a b c d e f g h m n o p q"
 
@@ -142,13 +149,43 @@ class ParallelSmoother(Module):
             new_ls = [combine_2, combine_1]
         return einops.rearrange(new_ls, "p t s b n m -> t (p s) b n m"), einops.rearrange(new_kernels, "p t s b n m -> t (p s) b n m")
 
+    class clip_grad(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, t):
+            return t
+
+        @staticmethod
+        def backward(ctx, grad):
+            return torch.clip(grad, -10, 10)
+
     @staticmethod
-    def print_grad(grad):
-        #print("Gradient for state:")
-        #print(print(torch.sum(torch.abs(grad)>100)))
-        #print("---")
-        clips = torch.clamp(grad, -1, 1)
-        return clips
+    def clamp_grad(grad):
+        return torch.clip(grad, -1, 1)
+
+    class prop_grad(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, log_prop, baseline):
+            ctx.save_for_backward(baseline)
+            return log_prop
+
+        @staticmethod
+        def backward(ctx, grad):
+            baseline, = ctx.saved_tensors
+            controlled_grad = grad - baseline
+            return controlled_grad, None
+
+    class apply_beta(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, tensor, beta):
+            ctx.save_for_backward(beta)
+            return tensor
+
+        @staticmethod
+        def backward(ctx, grad):
+            beta, = ctx.saved_tensors
+            return grad * beta, None
+
+
 
     def forward(self, n_particles: int,
                 time_extent: int,
@@ -159,8 +196,7 @@ class ParallelSmoother(Module):
                 ground_truth: Tensor | None = None,
                 control: Tensor | None = None,
                 time: Tensor | None = None,
-                series_metadata: Tensor | None = None,
-                custom_weighting: Callable = lambda *inputs: inputs) -> Tensor|dict:
+                series_metadata: Tensor | None = None) -> Tensor|dict:
 
         need_weight = False
         if isinstance(aggregation_function, pydpf.Module) and aggregation_function.need_weight:
@@ -170,10 +206,11 @@ class ParallelSmoother(Module):
                 if v.need_weight:
                     need_weight = True
 
-        obs_weighting = self.beta_observation if self.training else 1.
-        dyn_weighting = self.beta_dynamic if self.training else 1.
-        prop_weighting = self.beta_proposal if self.training else 1.
-        prior_weighting = self.beta_prior if self.training else 1.
+        one_tensor = torch.tensor(1., device = observation.device)
+        obs_weighting = torch.tensor(self.beta_observation, device=observation.device)  if self.training else one_tensor
+        dyn_weighting = torch.tensor(self.beta_dynamic, device=observation.device) if self.training else one_tensor
+        prop_weighting = torch.tensor(self.beta_proposal, device=observation.device) if self.training else one_tensor
+        prior_weighting = torch.tensor(self.beta_prior, device=observation.device) if self.training else one_tensor
 
         if not self.training:
             self.mode = "test"
@@ -192,13 +229,8 @@ class ParallelSmoother(Module):
         if time is not None:
             time = time[:time_extent+1]
         with torch.profiler.record_function("Proposal model"):
-            if self.mode == "model" or self.mode == "test":
-                with torch.no_grad():
-                    state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
-            else:
-                state, prop_density = self.proposal(n_particles, observation=observation, control=control)
-                prop_density = prop_density.detach()
-            #prop_density = torch.zeros_like(prop_density)
+            state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
+
         with torch.profiler.record_function("Reshaping"):
             batched_data = ParallelSmoother._get_batched_dict(ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
             state_repeat = einops.repeat(state[1:], 't b n d -> (t b) (m n) d', m = n_particles)
@@ -218,23 +250,38 @@ class ParallelSmoother(Module):
             dynamic_density = self.SSM.dynamic_model.log_density(state=state_repeat, prev_state=prev_state_repeat, **batched_data)
             #print("dyn:", dynamic_density.mean())
             #dynamic_density = torch.zeros_like(dynamic_density)
+        if self.use_control_var and self.training:
+            estimated_R = self.control_net(torch.cat([state_repeat, prev_state_repeat], dim=-1)).squeeze(-1)
+            estimated_R = einops.rearrange(estimated_R, "(t b) (m n) -> t b m n", t = time_extent, m = n_particles)
+            ler = estimated_R[-1:].mean(dim=-1)
+            estimated_R = torch.cat([estimated_R.mean(dim = -1), ler],dim=0)
+            prop_density = self.prop_grad.apply(prop_density, estimated_R.detach())
+            dummy_R = torch.zeros_like(prop_density, requires_grad=True)
+            prop_density = prop_density + dummy_R
         with torch.profiler.record_function("Reshaping"):
-            obs_score = einops.rearrange(obs_score, "(t b) n -> t b 1 n", t = time_extent + 1) * obs_weighting
-            prop_density = einops.rearrange(prop_density, "t b n -> t b 1 n", t = time_extent + 1).detach() * prop_weighting
-            dynamic_density = einops.rearrange(dynamic_density, "(t b) (m n) -> t b m n", t = time_extent, m = n_particles) * dyn_weighting
+            obs_score = einops.rearrange(obs_score, "(t b) n -> t b 1 n", t = time_extent + 1)
+            obs_score = self.apply_beta.apply(obs_score, obs_weighting)
+            prop_density = einops.rearrange(prop_density, "t b n -> t b 1 n", t = time_extent + 1)
+            prop_density = self.apply_beta.apply(prop_density, prop_weighting)
+            dynamic_density = einops.rearrange(dynamic_density, "(t b) (m n) -> t b m n", t = time_extent, m = n_particles)
+            dynamic_density = self.apply_beta.apply(dynamic_density, dyn_weighting)
         with torch.profiler.record_function("Kernel creation"):
             kernels = obs_score[1:] + dynamic_density - prop_density[1:]
-            if kernels.requires_grad:
-                kernels.register_hook(self.print_grad)
-            time_zero_l = obs_score[0].squeeze() + prior_density * prior_weighting - prop_density[0].squeeze()
+            #if kernels.requires_grad:
+            #    kernels = self.clip_grad.apply(kernels)
+            prior_density = self.apply_beta.apply(prior_density, prior_weighting)
+            time_zero_l = obs_score[0].squeeze() + prior_density - prop_density[0].squeeze()
         #print('start')
         #print(obs_score[0])
         #print(-prop_density[0])
         #print(kernels[0])
+        if self.clip_likelihoods:
+            kernels = torch.clip(kernels, -1e2 / 2, float('inf'))
+            time_zero_l = torch.clip(time_zero_l, -1e2 / 2, float('inf'))
 
         if not need_weight:
 
-            reduced = parallel_associative_reduce(kernels, ParallelSmoother.logmatmulexp.apply)
+            reduced = parallel_associative_reduce(ParallelSmoother.logmatmulexp.apply, None, False, kernels)
             reduced = reduced + time_zero_l.unsqueeze(-1)
             elbo = torch.logsumexp(reduced, dim=(-1, -2)) - 2 *log(kernels.size(-1))
             #print('Hmm')
@@ -250,7 +297,8 @@ class ParallelSmoother(Module):
                 return output
             return aggregation_function( kernel = kernels, elbo = elbo, initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
 
-
+        #print(torch.min(time_zero_l))
+        #print(torch.min(kernels))
         even_t_e = False
         if time_extent % 2 == 0:
             ls = torch.concat([time_zero_l[None, :, None, :].expand(-1, -1, kernels.size(-1), -1),  kernels[1::2]], dim=0)
@@ -285,5 +333,8 @@ class ParallelSmoother(Module):
                 output = {}
                 for name, function in aggregation_function.items():
                     output[name] = function(weight=weights, kernel = kernels, elbo = test[0].squeeze(), initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
-                return output
-            return aggregation_function(weight=weights, kernel = kernels, elbo = test[0].squeeze(), initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+            else:
+                output = aggregation_function(weight=weights, kernel = kernels, elbo = test[0].squeeze(), initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+            if self.use_control_var and self.training:
+                return output, estimated_R, dummy_R
+            return output

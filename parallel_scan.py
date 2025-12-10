@@ -73,20 +73,47 @@ def parallel_associative_scan(op, *tensor_list):
     remaining_results = op([tensor[0,:remaining_size] for tensor in running_tensor], [tensor[1,:remaining_size] for tensor in running_tensor])
     return [torch.concat([rt[0], rr], dim=0) for rt,rr in zip(running_tensor, remaining_results)]
 
-def parallel_associative_reduce(tensor:Tensor, op, keepdim=False):
+def single_element_par(op, keepdim, tensor):
     if tensor.size(0) < 2:
-        return tensor
-    running_tensor = tensor
+        if keepdim:
+            return tensor
+        else:
+            return tensor.squeeze(0)
+    running_tensor= tensor
     while running_tensor.size(0) > 1:
         left = running_tensor[::2]
         right = running_tensor[1::2]
-        if left.size(0) != right.size(0):
-            running_tensor = torch.concat([op(left[:-1], right), left[-1:]], dim=0)
+        if left.size(0) == right.size(0):
+            running_tensor = op(left, right)
             continue
-        running_tensor = op(left, right)
+        temp = op(left[:-1], right)
+        running_tensor = torch.concat([temp, left[-1:]], dim=0)
     if keepdim is False:
         return running_tensor.squeeze(0)
     return running_tensor
+
+def parallel_associative_reduce(op, reshaper, keepdim=False, *tensor_list):
+    if len(tensor_list) == 1:
+        return single_element_par(op, keepdim, tensor_list[0])
+    sequence_length = tensor_list[0].size(0)
+    for tensor in tensor_list:
+        if tensor.size(0) != sequence_length:
+            raise ValueError("All tensors must have the same length")
+    if tensor_list[0].size(0) < 2:
+        return tensor_list
+    running_tensor_list = tensor_list
+    while running_tensor_list[0].size(0) > 1:
+        left = [running_tensor[::2] for running_tensor in running_tensor_list]
+        right = [running_tensor[1::2] for running_tensor in running_tensor_list]
+        if left[0].size(0) == right[0].size(0):
+            running_tensor_list = op(left, right)
+            continue
+        short_left = [t[:-1] for t in left]
+        temp = op(short_left, right)
+        running_tensor_list = tuple([torch.concat([t, reshaper(l[-1:])], dim=0) for t, l in zip(temp, left)])
+    if keepdim is False:
+        return tuple([t.squeeze(0) for t in running_tensor_list])
+    return running_tensor_list
 
 
 

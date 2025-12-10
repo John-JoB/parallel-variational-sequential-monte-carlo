@@ -54,7 +54,8 @@ class Trainer:
                         json.dump(save_info, f)
             if save_intermediate_models:
                 torch.save(self.complete_model.state_dict(), intermediate_folder / f"{run_name}_stage_{i+1}_model_state.pt")
-            if i==len(self.stages) and "return" in run_info[-1]:
+            if i==len(self.stages) - 1 and "return" in run_info[-1]:
+                print('hi')
                 return parse_dictionary(t.logged_data, run_info[-1]["return"])
 
 
@@ -91,6 +92,7 @@ class TrainingStage:
         self.initialise = initialise
         self.run_on_step = run_on_step
         self.run_on_epoch = run_on_epoch
+        self.cv_optim = None
 
     def clear_data(self):
         del self.logged_data
@@ -102,6 +104,7 @@ class TrainingStage:
         self.logged_data["validation_batch_size"] = run_info["validation"]["batch_size"]
         self.logged_data["epochs"] = run_info["epochs"]
         self.logged_data["device"] = run_info["device"]
+
 
 
         train_loader = torch.utils.data.DataLoader(self.train_dataset, **get_dataloader_info(run_info["train"]))
@@ -142,7 +145,8 @@ class TrainingStage:
             break
 
     def fit(self, complete_model, run_info, verbose = True):
-
+        self.cv_optim = torch.optim.Adam(complete_model.parameters())
+        use_control_variates = ("use_control_variate" in run_info and run_info["use_control_variate"])
         self.logged_data = {}
         self.logged_data["train_batch_size"] = run_info["train"]["batch_size"]
 
@@ -189,22 +193,35 @@ class TrainingStage:
                 self.optimiser.zero_grad()
                 complete_model.update()
                 data_dict = get_data_dict(self.data_order,datum, device)
-                train_output, batch_dict = self.run_func("train", run_info, **data_dict)
-                loss = parse_formula_strip(train_output, run_info["loss"]).mean()
-                loss.backward()
-                if epoch == 0 and i == 0:
-                    for n, p in complete_model.named_parameters():
-                        print(n)
-                        if p.grad is not None:
-                            print(torch.mean(p.grad))
+                if use_control_variates:
+                    self.cv_optim.zero_grad()
+                    train_output, batch_dict, estimate_R, dummy_R = self.run_func("train", run_info, **data_dict)
+                    loss = parse_formula_strip(train_output, run_info["loss"]).mean()
+                    loss.backward(retain_graph=True)
+                    R = dummy_R.grad.detach()
+                    cv_error = ((R - estimate_R) ** 2).mean()
+                    cv_error.backward()
+                    self.cv_optim.step()
+                else:
+                    train_output, batch_dict = self.run_func("train", run_info, **data_dict)
+                    loss = parse_formula_strip(train_output, run_info["loss"]).mean()
+                    loss.backward()
+                #if epoch == 0 and i == 0:
+                #    for n, p in complete_model.named_parameters():
+                 #       print(n)
+                 #       if p.grad is not None:
+                 #           print(torch.mean(p.grad))
 
+                found_bad = False
                 for p in complete_model.parameters():
                     if p.grad is None:
                         continue
                     p.grad = torch.clip(p.grad, -1., 1.)
                     bad_ps = torch.logical_or(torch.isinf(p.grad), torch.isnan(p.grad))
                     if torch.any(bad_ps):
-                        print("Warning: found invalid grad")
+                        if not found_bad:
+                            print("Warning: found invalid grad")
+                            found_bad = True
                         p.grad = torch.where(bad_ps, torch.zeros_like(p.grad), p.grad)
                 self.optimiser.step()
                 self.run_on_step()
@@ -221,9 +238,8 @@ class TrainingStage:
                     validation_iterable = tqdm(validation_loader, desc="Validating: ")
 
             complete_model.update()
-            complete_model.eval()
             validation_logs = {}
-
+            complete_model.eval()
             with torch.inference_mode():
                 if run_validation:
                     for datum in validation_iterable:
@@ -317,6 +333,9 @@ class VanillaPydpfRun(ExperimentRun):
             raw_output = self.model(run_info[mode]["n_particles"], run_info[mode]["time_extent"], run_info[mode]["output_function"], run_info[mode]["gradient_regulariser"], **data)
         else:
             raw_output = self.model(run_info[mode]["n_particles"], run_info[mode]["time_extent"], run_info[mode]["output_function"], **data)
+        if "use_control_variate" in run_info and run_info["use_control_variate"] and mode == "train":
+            raw_output, estimated_R, dummy_R = raw_output
+
         means = {}
         batch_dict = {"time_average": {}}
         for k,v in raw_output.items():
@@ -329,6 +348,8 @@ class VanillaPydpfRun(ExperimentRun):
             batch_dict["time_average"][k] = 0
             means[k] = torch.mean(v, dim=0)
         raw_output["time_average"] = means
+        if "use_control_variate" in run_info and run_info["use_control_variate"] and mode == "train":
+            return raw_output, batch_dict, estimated_R, dummy_R
         return raw_output, batch_dict
 
 class ParallelRun(ExperimentRun):

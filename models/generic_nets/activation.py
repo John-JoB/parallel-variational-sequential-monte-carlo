@@ -42,4 +42,6 @@ def activation_function_from_string(str_fun):
             return _normalise()
         case 'id':
             return torch.nn.Identity()
+        case 'swish':
+            return torch.nn.SiLU()
     raise ValueError(f"Activation function '{str_fun}' not recognized")

@@ -4,6 +4,7 @@ import pydpf
 from torch import Tensor
 import torch
 import numpy as np
+from math import log
 
 class MDPS(Module):
 
@@ -46,7 +47,9 @@ class MDPS(Module):
             self.aggregation_function = torch.nn.ModuleDict(aggregation_function)
         data = self._get_existing_data(ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata)
         observation = observation[:time_extent+1]
-        forward_state = self.forward_filter(n_particles=n_particles, time_extent=time_extent, observation=observation, aggregation_function=pydpf.State(), gradient_regulariser=gradient_regulariser, **data)
+        forward_res = self.forward_filter(n_particles=n_particles, time_extent=time_extent, observation=observation, aggregation_function={"state": pydpf.State(), "weight": pydpf.Weight()}, gradient_regulariser=gradient_regulariser, **data)
+        forward_state = forward_res["state"]
+        forward_weight = forward_res["weight"]
         backward_data = {k:torch.flip(v, (0,)) for k,v in data.items()}
         backward_state = self.backward_filter(n_particles=n_particles, time_extent=time_extent, observation=torch.flip(observation, (0,)), aggregation_function=pydpf.State(), gradient_regulariser=gradient_regulariser, **backward_data)
         #Don't actually sample the particles, just take all of them. This is unbiased due to GMIS Elvira 2015
@@ -61,23 +64,13 @@ class MDPS(Module):
         #This line seems wrong, correct application of REINFORCE would detach the particles here but this follows the original paper's code.
         output_weights = combination_weights - combined_integrated_weight.detach()
         #Could be vectorised, but this is hardly going to be the performance bottleneck
-        output_weights, _ = pydpf.normalise(output_weights)
-        for t in range(len(output_weights)):
-            time_data = MDPS._get_time_data(t, state = combined_particle_state, weight = output_weights, observation=observation, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata)
-            if output_dict:
-                for k,v in aggregation_function.items():
-                    if t == 0:
-                        temp = v(**time_data)
-                        output[k] = torch.empty((time_extent+1, *temp.size()), device = observation.device, dtype=temp.dtype)
-                        output[k][0] = temp
-                    else:
-                        output[k][t] = v(**time_data)
-            else:
-                if t == 0:
-                    temp = aggregation_function(**time_data)
-                    output = torch.empty((time_extent + 1, *temp.size()), device=observation.device, dtype=temp.dtype)
-                    output[0] = temp
-                else:
-                    output[t] = aggregation_function(**time_data)
+        output_weights, elbo_factors = pydpf.normalise(output_weights)
+        elbo = torch.sum(torch.logsumexp(forward_weight, dim = -1), dim=0) - log(n_particles)
+        if output_dict:
+            output = {}
+            for k, v in aggregation_function.items():
+                output[k] = v(weight=output_weights, kernel=None, elbo=elbo, initial_likelihood=None, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=combined_particle_state)
+        else:
+                output = aggregation_function(weight=output_weights, kernel=None, elbo=elbo, initial_likelihood=None, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=combined_particle_state)
         return output
 

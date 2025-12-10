@@ -53,7 +53,7 @@ class ConvEncoder(pydpf.Module):
         super().__init__()
         layers = []
         for i, layer in enumerate(layers_info):
-            if layer["type"] != "dropout":
+            if layer["type"] != "dropout" and layer["type"] != "batchnorm":
                 layer["dtype"] = dtype
                 layer["device"] = device
                 activation = activation_function_from_string(layer["activation"])
@@ -67,7 +67,9 @@ class ConvEncoder(pydpf.Module):
                 layers.append(LinearWithInvertedDim(**layer))
                 layers.append(activation)
             if type == "dropout":
-                layers.append(torch.nn.Dropout(**layer))
+                layers.append(torch.nn.Dropout1d(**layer))
+            if type == "batchnorm":
+                layers.append(torch.nn.BatchNorm1d(**layer))
         self.layers = torch.nn.Sequential(*layers)
 
     def forward(self, input):

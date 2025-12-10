@@ -9,6 +9,7 @@ class TwoFilter(pydpf.Module):
         self.information_SSM = information_SSM
         self.forward_filter = pydpf.DPF(SSM, generator)
         self.information_filter = pydpf.DPF(information_SSM, generator)
+        self.SSM = self.forward_SSM
 
     @staticmethod
     def _get_batched_dict(**data):
