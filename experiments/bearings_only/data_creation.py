@@ -5,7 +5,6 @@ from pathlib import Path
 import argparse
 import os
 
-
 def create_datasets(device, training_trajectories, validation_trajectories, test_trajectories, time_extent, batch_size):
     prior_gen = torch.Generator(device=device).manual_seed(0)
     true_prior = true_model.true_prior(generator=prior_gen)

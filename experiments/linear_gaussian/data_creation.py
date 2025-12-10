@@ -16,7 +16,7 @@ def generate(dx=5, dy=5, device=torch.device('cpu')):
     data_folder = Path("./experiments/linear_gaussian/data/")
     raw_data = data_folder / "raw.csv"
     total_trajectories = 1000
-    if pydpf.simulate_and_save(raw_data, SSM, time_extent=50, n_trajectories=total_trajectories, batch_size=50, device=device) == -1:
+    if pydpf.simulate_and_save(raw_data, SSM, time_extent=500, n_trajectories=total_trajectories, batch_size=50, device=device) == -1:
         return
     raw_data = pydpf.StateSpaceDataset(raw_data, state_prefix="state", device="cpu")
     train_set, validation_set, test_set = raw_data.deterministic_split((500, 100, 400))

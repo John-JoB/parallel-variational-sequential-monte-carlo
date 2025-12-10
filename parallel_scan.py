@@ -3,25 +3,24 @@ import torch
 from torch import Tensor
 import einops
 
-def op_helper(left, right, op, second = False):
-    if left.size(0) != right.size(0):
-        output = op(left[:-1], right)
+def op_helper(op,left_list, right_list, second = False):
+    if left_list[0].size(0) != right_list[0].size(0):
+        output = op([left[:-1] for left in left_list], right_list)
         if second:
             return output
-        return torch.concat([output, left[-1:]], dim=0)
-    return op(left, right)
+        return [torch.concat([o, left[-1:]], dim=0) for o,left in zip(output, left_list)]
+    return op(left_list, right_list)
 
-def tree_recurse(tensor: Tensor, op):
-    left_1 = tensor[::2]
-    right_1 = tensor[1::2]
-    combine_1 = op_helper(left_1, right_1, op)
+def tree_recurse(op, tensor_list):
+    left_1 = [tensor[::2] for tensor in tensor_list]
+    right_1 = [tensor[1::2] for tensor in tensor_list]
+    combine_1 = list(op_helper(op, left_1, right_1))
     left_2 = right_1
-    right_2 = tensor[2::2]
-    combine_2 = op_helper(left_2, right_2, op, True)
-    combine_2 = torch.concat([tensor[0:1], combine_2], dim=0)
-    new_tensor = [combine_2, combine_1]
-    dims = "".join([f"dim_{i} " for i in range(combine_1.dim() - 2)])
-    return einops.rearrange(new_tensor, f'p t s {dims} -> t (p s) {dims}')
+    right_2 = [tensor[2::2] for tensor in tensor_list]
+    combine_2 = list(op_helper(op, left_2, right_2, True))
+    combine_2 = [torch.concat([tensor[0:1], c2], dim=0) for tensor,c2 in zip(tensor_list, combine_2)]
+    dims = "".join([f"dim_{i} " for i in range(combine_1[0].dim() - 2)])
+    return [einops.rearrange([c2, c1], f'p t s {dims} -> t (p s) {dims}') for c1,c2 in zip(combine_1, combine_2)]
 
 def op_helper_de(left, right, op):
     if left.size(0) != right.size(0):
@@ -60,15 +59,19 @@ def parallel_associative_scan_de(tensor:Tensor, op, identity = 0):
     return forward_tensor, backward_tensor
 
 
-def parallel_associative_scan(tensor:Tensor, op):
-    if tensor.size(0) < 2:
-        return tensor
-    running_tensor = tensor.unsqueeze(1)
-    while running_tensor.size(0) > 2:
-        running_tensor = tree_recurse(running_tensor, op)
-    remaining_size = tensor.size(0) - running_tensor.size(1)
-    remaining_results = op(running_tensor[0,:remaining_size], running_tensor[1,:remaining_size])
-    return torch.concat([running_tensor[0], remaining_results], dim=0)
+def parallel_associative_scan(op, *tensor_list):
+    sequence_length = tensor_list[0].size(0)
+    for tensor in tensor_list:
+        if tensor.size(0) != sequence_length:
+            raise ValueError("All tensors must have the same length")
+    if sequence_length < 2:
+        return tensor_list
+    running_tensor = [tensor.unsqueeze(1) for tensor in tensor_list]
+    while running_tensor[0].size(0) > 2:
+        running_tensor = tree_recurse(op, running_tensor)
+    remaining_size = tensor_list[0].size(0) - running_tensor[0].size(1)
+    remaining_results = op([tensor[0,:remaining_size] for tensor in running_tensor], [tensor[1,:remaining_size] for tensor in running_tensor])
+    return [torch.concat([rt[0], rr], dim=0) for rt,rr in zip(running_tensor, remaining_results)]
 
 def parallel_associative_reduce(tensor:Tensor, op, keepdim=False):
     if tensor.size(0) < 2:

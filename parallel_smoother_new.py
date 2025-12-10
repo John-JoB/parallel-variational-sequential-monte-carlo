@@ -5,12 +5,22 @@ from torch import Tensor
 import einops
 from math import log, ceil
 import opt_einsum as oe
+from parallel_scan import parallel_associative_scan, parallel_associative_reduce
+from typing import Callable
+
+from smoother_outputs import dSMC_ELBO, VAE_ELBO
+
 
 class ParallelSmoother(Module):
     def __init__(self, proposal, SSM):
         super().__init__()
         self.proposal = proposal
         self.SSM = SSM
+        self.beta_observation = 1.
+        self.beta_dynamic = 1.
+        self.beta_prior = 1.
+        self.beta_proposal = 1.
+        self.mode = "model"
 
     einsum_letters = " a b c d e f g h m n o p q"
 
@@ -43,30 +53,70 @@ class ParallelSmoother(Module):
         return batched_data
 
     class logsumredexp(torch.autograd.Function):
-        @staticmethod
+        """@staticmethod
         def forward(ctx, left, centre, right):
             max_left = torch.amax(left, -1, keepdim=True)
             max_centre = torch.amax(centre, (-1, -2 ), keepdim=True)
             max_right = torch.amax(right, -2, keepdim=True)
+            exp_right = torch.exp(torch.clamp(right - max_right, -800, 80))
+            exp_centre = torch.exp(torch.clamp(centre - max_centre, -800, 80))
+            exp_left = torch.exp(torch.clamp(left - max_left, -800, 80))
+            exp_output = exp_left @ exp_centre @ exp_right
+            ctx.save_for_backward(exp_left, exp_centre, exp_right, exp_output)
+            return torch.log(torch.clamp(exp_output, -800, 80)) + max_left + max_right + max_centre"""
+
+        @staticmethod
+        def forward(ctx, left, centre, right):
+            max_left = torch.amax(left, -1, keepdim=True)
+            max_centre = torch.amax(centre, (-1, -2), keepdim=True)
+            max_right = torch.amax(right, -2, keepdim=True)
             exp_right = torch.exp(right - max_right)
             exp_centre = torch.exp(centre - max_centre)
             exp_left = torch.exp(left - max_left)
-            letters = ParallelSmoother.einsum_letters[:2 * (left.dim() - 2)]
-            exp_output = oe.contract(f"{letters} i j, {letters} j k, {letters} k l -> {letters} i l", exp_left, exp_centre, exp_right, backend="torch")
+            exp_output = exp_left @ exp_centre @ exp_right
             ctx.save_for_backward(exp_left, exp_centre, exp_right, exp_output)
-            return (torch.log(exp_output) + max_left + max_right + max_centre - log(centre.size(-1))*2)
+            return torch.log(exp_output) + max_left + max_right + max_centre
 
         @staticmethod
         def backward(ctx, do):
             exp_left, exp_centre, exp_right, exp_output = ctx.saved_tensors
             letters = ParallelSmoother.einsum_letters[:2 * (exp_left.dim() - 2)]
-            grad_scaled = do / exp_output
+            grad_scaled = do / (exp_output + 1e-8)
             #Do a lot of repeated computation to save having a giant tensor in memory.
             grad_left = oe.contract(f"{letters} j k, {letters} k l, {letters} i l -> {letters} i j", exp_centre, exp_right, grad_scaled, backend="torch") * exp_left
             grad_right = oe.contract(f"{letters} i j, {letters} j k, {letters} i l -> {letters} k l", exp_left, exp_centre, grad_scaled, backend="torch") * exp_right
             grad_centre = oe.contract(f"{letters} i j, {letters} k l, {letters} i l -> {letters} j k", exp_left, exp_right, grad_scaled, backend="torch") * exp_centre
             return grad_left, grad_centre, grad_right
 
+
+    class logmatmulexp(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, left, right):
+            max_left = torch.amax(left, -1, keepdim=True)
+            max_right = torch.amax(right, -2, keepdim=True)
+            exp_right = torch.exp(torch.clamp(right - max_right, -800, 80))
+            exp_left = torch.exp(torch.clamp(left - max_left, -800, 80))
+            exp_output = exp_left @ exp_right
+            ctx.save_for_backward(exp_left, exp_right, exp_output)
+            return torch.log(torch.clamp(exp_output, -800, 80)) + max_left + max_right - log(left.size(-1))
+
+        """@staticmethod
+        def forward(ctx, left, right):
+            max_left = torch.amax(left, -1, keepdim=True)
+            max_right = torch.amax(right, -2, keepdim=True)
+            exp_right = torch.exp(right - max_right)
+            exp_left = torch.exp(left - max_left)
+            exp_output = exp_left @ exp_right
+            ctx.save_for_backward(exp_left, exp_right, exp_output)
+            return torch.log(exp_output) + max_left + max_right - log(left.size(-1))"""
+
+        @staticmethod
+        def backward(ctx, do):
+            exp_left, exp_right, exp_output = ctx.saved_tensors
+            grad_scaled = do / (exp_output + 1e-8)
+            grad_left =  (grad_scaled @ exp_right.transpose(-1, -2)) * exp_left
+            grad_right = (grad_scaled.transpose(-1, -2) @ exp_left) * exp_right
+            return grad_left, grad_right
 
     def combine(self, left_ls, right_ls, kernels):
         if left_ls.size(0) != right_ls.size(0):
@@ -85,7 +135,6 @@ class ParallelSmoother(Module):
         right_2 = ls[2::2]
         combine_2 = torch.concat([ls[0:1], self.combine(left_2, right_2, kernels_2)], dim = 0)
         if combine_1.size(0) != combine_2.size(0):
-
             new_kernels = [kernels_1, torch.concat([kernels_2, torch.zeros_like(kernels_2[0:1])], dim=0,)]
             new_ls = [combine_2, torch.concat([combine_1, torch.zeros_like(combine_2[0:1])], dim = 0)]
         else:
@@ -95,9 +144,11 @@ class ParallelSmoother(Module):
 
     @staticmethod
     def print_grad(grad):
-        print("Gradient for state:")
-        print(torch.mean(grad, dim=1))
-        print("---")
+        #print("Gradient for state:")
+        #print(print(torch.sum(torch.abs(grad)>100)))
+        #print("---")
+        clips = torch.clamp(grad, -1, 1)
+        return clips
 
     def forward(self, n_particles: int,
                 time_extent: int,
@@ -108,7 +159,30 @@ class ParallelSmoother(Module):
                 ground_truth: Tensor | None = None,
                 control: Tensor | None = None,
                 time: Tensor | None = None,
-                series_metadata: Tensor | None = None) -> Tensor|dict:
+                series_metadata: Tensor | None = None,
+                custom_weighting: Callable = lambda *inputs: inputs) -> Tensor|dict:
+
+        need_weight = False
+        if isinstance(aggregation_function, pydpf.Module) and aggregation_function.need_weight:
+            need_weight = True
+        elif isinstance(aggregation_function, dict):
+            for v in aggregation_function.values():
+                if v.need_weight:
+                    need_weight = True
+
+        obs_weighting = self.beta_observation if self.training else 1.
+        dyn_weighting = self.beta_dynamic if self.training else 1.
+        prop_weighting = self.beta_proposal if self.training else 1.
+        prior_weighting = self.beta_prior if self.training else 1.
+
+        if not self.training:
+            self.mode = "test"
+        elif self.mode == "test":
+            self.mode = "prop"
+        elif self.mode == "prop":
+            self.mode = "model"
+        else:
+            self.mode = "prop"
 
         observation = observation[:time_extent+1]
         if ground_truth is not None:
@@ -118,40 +192,76 @@ class ParallelSmoother(Module):
         if time is not None:
             time = time[:time_extent+1]
         with torch.profiler.record_function("Proposal model"):
-            state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
+            if self.mode == "model" or self.mode == "test":
+                with torch.no_grad():
+                    state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
+            else:
+                state, prop_density = self.proposal(n_particles, observation=observation, control=control)
+                prop_density = prop_density.detach()
+            #prop_density = torch.zeros_like(prop_density)
         with torch.profiler.record_function("Reshaping"):
             batched_data = ParallelSmoother._get_batched_dict(ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
-            state_repeat = einops.repeat(state[1:], 't b n d -> (t b) (n m) d', m = n_particles)
-            prev_state_repeat = einops.repeat(state[:-1], 't b n d -> (t b) (m n) d', m = n_particles)
+            state_repeat = einops.repeat(state[1:], 't b n d -> (t b) (m n) d', m = n_particles)
+            prev_state_repeat = einops.repeat(state[:-1], 't b n d -> (t b) (n m) d', m = n_particles)
         with torch.profiler.record_function("Observation model"):
             obs_score = self.SSM.observation_model.score(**batched_data)
+            #print("obs:", obs_score.mean())
+            #obs_score = torch.zeros_like(obs_score)
         with torch.profiler.record_function("Reshaping"):
             del (batched_data["state"])
             t_zero_data = ParallelSmoother._get_time_zero_data(state = state, observation=observation, control=control, time=time, series_metadata=series_metadata)
         with torch.profiler.record_function("Prior Model"):
             prior_density = self.SSM.prior_model.log_density(**t_zero_data)
+            #print("prior:", prior_density.mean())
+            #prior_density = torch.zeros_like(prior_density)
         with torch.profiler.record_function("Dynamic Model"):
             dynamic_density = self.SSM.dynamic_model.log_density(state=state_repeat, prev_state=prev_state_repeat, **batched_data)
+            #print("dyn:", dynamic_density.mean())
+            #dynamic_density = torch.zeros_like(dynamic_density)
         with torch.profiler.record_function("Reshaping"):
-            obs_score = einops.rearrange(obs_score, "(t b) n -> t b 1 n", t = time_extent + 1)
-            prop_density = einops.rearrange(prop_density, "t b n -> t b 1 n", t = time_extent + 1)
-            dynamic_density = einops.rearrange(dynamic_density, "(t b) (m n) -> t b m n", t = time_extent, m = n_particles)
-
+            obs_score = einops.rearrange(obs_score, "(t b) n -> t b 1 n", t = time_extent + 1) * obs_weighting
+            prop_density = einops.rearrange(prop_density, "t b n -> t b 1 n", t = time_extent + 1).detach() * prop_weighting
+            dynamic_density = einops.rearrange(dynamic_density, "(t b) (m n) -> t b m n", t = time_extent, m = n_particles) * dyn_weighting
         with torch.profiler.record_function("Kernel creation"):
             kernels = obs_score[1:] + dynamic_density - prop_density[1:]
-            #kernels.register_hook(self.print_grad)
-            time_zero_l = obs_score[0].squeeze() + prior_density - prop_density[0].squeeze()
-            even_t_e = False
-            if time_extent % 2 == 0:
-                ls = torch.concat([time_zero_l[None, :, :, None].expand(-1, -1, -1, kernels.size(-1)),  kernels[1::2]], dim=0)
-                remaining_kernels = kernels[::2]
-                even_t_e = True
-            else:
-                ls = kernels[::2]
-                remaining_kernels = kernels[1::2]
-                ls[0] += time_zero_l.unsqueeze(-1)
-            ls = ls.unsqueeze(1)
-            new_kernels = remaining_kernels.unsqueeze(1)
+            if kernels.requires_grad:
+                kernels.register_hook(self.print_grad)
+            time_zero_l = obs_score[0].squeeze() + prior_density * prior_weighting - prop_density[0].squeeze()
+        #print('start')
+        #print(obs_score[0])
+        #print(-prop_density[0])
+        #print(kernels[0])
+
+        if not need_weight:
+
+            reduced = parallel_associative_reduce(kernels, ParallelSmoother.logmatmulexp.apply)
+            reduced = reduced + time_zero_l.unsqueeze(-1)
+            elbo = torch.logsumexp(reduced, dim=(-1, -2)) - 2 *log(kernels.size(-1))
+            #print('Hmm')
+            #print(obs_score[20, 0])
+            #print(-prop_density[20, 0])
+            #print(kernels[20, 0])
+            #print(kernels.size())
+            #print(dynamic_density[20, 0, 0])
+            if isinstance(aggregation_function, dict):
+                output = {}
+                for name, function in aggregation_function.items():
+                    output[name] = function(kernel = kernels, elbo = elbo, initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+                return output
+            return aggregation_function( kernel = kernels, elbo = elbo, initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+
+
+        even_t_e = False
+        if time_extent % 2 == 0:
+            ls = torch.concat([time_zero_l[None, :, None, :].expand(-1, -1, kernels.size(-1), -1),  kernels[1::2]], dim=0)
+            remaining_kernels = kernels[::2]
+            even_t_e = True
+        else:
+            ls = kernels[::2]
+            remaining_kernels = kernels[1::2]
+            ls[0] += time_zero_l.unsqueeze(-1)
+        ls = ls.unsqueeze(1)
+        new_kernels = remaining_kernels.unsqueeze(1)
         with torch.profiler.record_function("Prefix sum"):
             while True:
                 ls, new_kernels = self.tree_recurse(ls, new_kernels)
@@ -163,16 +273,17 @@ class ParallelSmoother(Module):
             right_facing_ls = torch.logsumexp(useful_ls[1], dim=-1, keepdim=False).unsqueeze(-2)
             combined_weights = left_facing_ls + right_facing_ls + remaining_kernels
             weights = einops.rearrange([torch.logsumexp(combined_weights, dim=-1), torch.logsumexp(combined_weights, dim=-2)], "s t b n -> (t s) b n")
-            outer_weights = ParallelSmoother.logsumredexp.apply(useful_ls[0, 0], remaining_kernels[0], useful_ls[1, 0]) + 2*log(weights.size(-1))
+            outer_weights = ParallelSmoother.logsumredexp.apply(useful_ls[0, 0], remaining_kernels[0], useful_ls[1, 0])
             if even_t_e:
-                weights = torch.concat([weights, torch.logsumexp(outer_weights, dim=-2).unsqueeze(0)], dim=0) - 3*log(weights.size(-1))
+                weights = torch.concat([weights, torch.logsumexp(outer_weights, dim=-2).unsqueeze(0)], dim=0) - (time_extent+2)*log(weights.size(-1))
             else:
-                weights = torch.concat([torch.logsumexp(outer_weights, dim=-1).unsqueeze(0), weights, torch.logsumexp(outer_weights, dim=-2).unsqueeze(0)], dim=0) - 3 * log(weights.size(-1))
+                weights = torch.concat([torch.logsumexp(outer_weights, dim=-1).unsqueeze(0), weights, torch.logsumexp(outer_weights, dim=-2).unsqueeze(0)], dim=0) - (time_extent+1) * log(weights.size(-1))
             weights, test = pydpf.normalise(weights)
+
         with torch.profiler.record_function("Calculating outputs"):
             if isinstance(aggregation_function, dict):
                 output = {}
                 for name, function in aggregation_function.items():
-                    output[name] = function(weight=weights, kernel = kernels, initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+                    output[name] = function(weight=weights, kernel = kernels, elbo = test[0].squeeze(), initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
                 return output
-            return aggregation_function(weight=weights, kernel = kernels, initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)
+            return aggregation_function(weight=weights, kernel = kernels, elbo = test[0].squeeze(), initial_likelihood = time_zero_l, ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)

@@ -7,7 +7,7 @@ from experiments.bearings_only.main import make_kernel, load_datasets
 from smoother_outputs import NegativeKernelLogLikelihood as KNLL
 from smoother_outputs import MSE
 from proposal_to_output import ProposalRunner
-from experiments.common.training import VanillaPydpfRun, TrainingStage, Trainer, _ModuleList
+from experiments.common.training import VanillaPydpfRun, TrainingStage, Trainer, ModuleList
 from experiments.common.parameter_set import ParameterSet
 from truncated_pvmc import Truncated
 
@@ -142,10 +142,10 @@ def make_training_stages(data_folder, device):
 def make_training_routine(data_folder, device):
     stages, pvmc, encoder, first_knll, info, = make_training_stages(data_folder, device)
 
-    stages[2].profile(_ModuleList([pvmc, encoder, first_knll]), info[2])
-    raise SystemExit(0)
-    routine = Trainer(pvmc, encoder, first_knll, stages = stages[2:])
-    return routine, info[2:]
+    #stages[2].profile(ModuleList([pvmc, encoder, first_knll]), info[2])
+    #raise SystemExit(0)
+    routine = Trainer(pvmc, encoder, first_knll, stages = stages)
+    return routine, info
 
 
 if __name__ == "__main__":

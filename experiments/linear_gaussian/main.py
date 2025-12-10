@@ -65,7 +65,7 @@ def make_stage_info(train_info, validation_info, test_info, train_loss, target, 
     info =  {"train": train_info,
         "validation": validation_info,
         "test": test_info,
-        "loss": f"time_average.{train_loss}",
+        "loss": f"- time_average.{train_loss}",
         "print_each_epoch": printed_dict,
         "epochs": epochs,
         "device": device,
@@ -93,8 +93,8 @@ def add_arguments():
     parser.add_argument("--experiment", action="store", type=str, default="PVMC")
     parser.add_argument("--path", action="store", type=str, default="./experiments/linear_gaussian/data/")
     parser.add_argument("--save_model_path", action="store", type=str, default="./experiments/linear_gaussian/saved_models/")
-    parser.add_argument("--dx", action="store", type=int, default=2)
-    parser.add_argument("--dy", action="store", type=int, default=2)
+    parser.add_argument("--dx", action="store", type=int, default=5)
+    parser.add_argument("--dy", action="store", type=int, default=5)
     parser.add_argument("--profile", action="store_true")
     return parser
 
@@ -111,7 +111,7 @@ def str_to_output(output_as_str, dx, device):
             return MSE()
         case "vae_elbo":
             return VAE_ELBO()
-        case "negativekernelloglikelihood":
+        case "negative kernel log likelihood":
             k = pydpf.MultivariateGaussian(torch.zeros(dx, device=device), torch.nn.Parameter(torch.eye(dx, device=device)), diagonal_cov=True)
             KDE = pydpf.KernelMixture(k, torch.Generator(device=device), pydpf.MultinomialResampler(torch.Generator(device=device)))
             return NegativeKernelLogLikelihood(KDE)

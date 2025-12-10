@@ -2,15 +2,13 @@ from pathlib import Path
 import time
 import pickle
 import json
+
 import torch
-from sympy.codegen.cfunctions import expm1
 from tqdm import tqdm
-import numpy as np
 from abc import ABC, abstractmethod
-import pydpf
-import ast
 from models.generic_nets.module_list import  ModuleList
 from experiments.common.dict_handling import *
+from smoother_outputs import dSMC_ELBO, VAE_ELBO
 
 
 class Trainer:
@@ -18,9 +16,6 @@ class Trainer:
     def __init__(self, *complete_model, stages):
         self.complete_model = ModuleList(complete_model)
         self.stages = stages
-
-    @staticmethod
-
 
     def fit(self, run_name, run_info, save_intermediate_models = True, intermediate_folder = None, outputs_save_format = "pickle", verbose = True):
         if not outputs_save_format in ["pickle", "json"]:
@@ -59,6 +54,8 @@ class Trainer:
                         json.dump(save_info, f)
             if save_intermediate_models:
                 torch.save(self.complete_model.state_dict(), intermediate_folder / f"{run_name}_stage_{i+1}_model_state.pt")
+            if i==len(self.stages) and "return" in run_info[-1]:
+                return parse_dictionary(t.logged_data, run_info[-1]["return"])
 
 
 class TrainingStage:
@@ -72,6 +69,9 @@ class TrainingStage:
                  data_order,
                  lr_scheduler = None,
                  lr_step_freq = "never",
+                 initialise=lambda *args, **kwargs: None,
+                 run_on_step=lambda: None,
+                 run_on_epoch=lambda: None
                  ):
         if not lr_step_freq in ["epoch", "opt_step", "never", "all"]:
             raise ValueError("lr_scheduler must be either 'epoch' or 'opt_step' or 'never' or 'all'")
@@ -88,22 +88,12 @@ class TrainingStage:
         self.stage_output_print = []
         self.stage_output_save = []
         self.stage_output_retain = None
+        self.initialise = initialise
+        self.run_on_step = run_on_step
+        self.run_on_epoch = run_on_epoch
 
     def clear_data(self):
         del self.logged_data
-
-    def initialise(self, prev_output_dict, run_data):
-        pass
-
-    def run_on_step(self):
-        pass
-
-    def run_on_epoch(self):
-        pass
-
-
-    def to_test_runner(self):
-        return Test_Runner(self.run_func, self.test_dataset, self.data_order)
 
 
     def profile(self, complete_model, run_info, sort_by = "cuda_memory_usage"):
@@ -112,6 +102,7 @@ class TrainingStage:
         self.logged_data["validation_batch_size"] = run_info["validation"]["batch_size"]
         self.logged_data["epochs"] = run_info["epochs"]
         self.logged_data["device"] = run_info["device"]
+
 
         train_loader = torch.utils.data.DataLoader(self.train_dataset, **get_dataloader_info(run_info["train"]))
         validation_loader = torch.utils.data.DataLoader(self.validation_dataset, **get_dataloader_info(run_info["validation"]))
@@ -154,19 +145,23 @@ class TrainingStage:
 
         self.logged_data = {}
         self.logged_data["train_batch_size"] = run_info["train"]["batch_size"]
-        self.logged_data["validation_batch_size"] = run_info["validation"]["batch_size"]
+
         self.logged_data["epochs"] = run_info["epochs"]
         self.logged_data["device"] = run_info["device"]
 
         train_loader = torch.utils.data.DataLoader(self.train_dataset, **get_dataloader_info(run_info["train"]))
-        validation_loader = torch.utils.data.DataLoader(self.validation_dataset, **get_dataloader_info(run_info["validation"]))
+
         train_iterable = train_loader
-        validation_iterable = validation_loader
+        run_validation = False
+        if "validation" in run_info:
+            self.logged_data["validation_batch_size"] = run_info["validation"]["batch_size"]
+            validation_loader = torch.utils.data.DataLoader(self.validation_dataset, **get_dataloader_info(run_info["validation"]))
+            validation_iterable = validation_loader
+            run_validation = True
         if "test" in run_info:
             test_loader = torch.utils.data.DataLoader(self.test_dataset, **get_dataloader_info(run_info["test"]))
             test_iterable = test_loader
             self.logged_data["test_batch_size"] = run_info["test"]["batch_size"]
-
 
         try:
             target = run_info["target"]
@@ -202,6 +197,15 @@ class TrainingStage:
                         print(n)
                         if p.grad is not None:
                             print(torch.mean(p.grad))
+
+                for p in complete_model.parameters():
+                    if p.grad is None:
+                        continue
+                    p.grad = torch.clip(p.grad, -1., 1.)
+                    bad_ps = torch.logical_or(torch.isinf(p.grad), torch.isnan(p.grad))
+                    if torch.any(bad_ps):
+                        print("Warning: found invalid grad")
+                        p.grad = torch.where(bad_ps, torch.zeros_like(p.grad), p.grad)
                 self.optimiser.step()
                 self.run_on_step()
                 if self.lr_scheduler is not None and self.lr_step_freq == "opt_step":
@@ -213,22 +217,29 @@ class TrainingStage:
                     self.lr_scheduler.step()
             if verbose:
                 print("Finished training")
-                validation_iterable = tqdm(validation_loader, desc="Validating: ")
+                if run_validation:
+                    validation_iterable = tqdm(validation_loader, desc="Validating: ")
 
             complete_model.update()
             complete_model.eval()
             validation_logs = {}
+
             with torch.inference_mode():
-                for datum in validation_iterable:
-                    data_dict = get_data_dict(self.data_order, datum, device)
-                    validation_outputs, val_batch_dict = self.run_func("validation", run_info, **data_dict)
-                    validation_logs = append_dict(validation_logs, dict_to_numpy(validation_outputs), val_batch_dict)
+                if run_validation:
+                    for datum in validation_iterable:
+                        data_dict = get_data_dict(self.data_order, datum, device)
+                        validation_outputs, val_batch_dict = self.run_func("validation", run_info, **data_dict)
+                        validation_logs = append_dict(validation_logs, dict_to_numpy(validation_outputs), val_batch_dict)
 
                 train_logs["train_loss"] = np.array(step_losses)
                 batch_dict["train_loss"] = 0
                 mean_train_logs = mean_dict(train_logs, len(self.train_dataset), batch_dict)
-                mean_validation_logs = mean_dict(validation_logs, len(self.validation_dataset), val_batch_dict)
-                epoch_logs = {"train": {"raw": train_logs, "mean": mean_train_logs}, "validation": {"raw": validation_logs, "mean": mean_validation_logs}}
+
+                epoch_logs = {"train": {"raw": train_logs, "mean": mean_train_logs}}
+                if run_validation:
+                    mean_validation_logs = mean_dict(validation_logs, len(self.validation_dataset), val_batch_dict)
+                    epoch_logs = {**epoch_logs, "validation": {"raw": validation_logs, "mean": mean_validation_logs}}
+
                 if target is not None:
                     t = parse_formula_strip(epoch_logs, target)
 
@@ -239,7 +250,8 @@ class TrainingStage:
             self.run_on_epoch()
 
             if verbose:
-                print("Finished Validation")
+                if run_validation:
+                    print("Finished Validation")
                 for k, v in run_info["print_each_epoch"].items():
                     print(f"{k}: {parse_formula_strip(epoch_logs, v)}")
 
@@ -300,7 +312,7 @@ class VanillaPydpfRun(ExperimentRun):
         super().__init__(preprocessors=preprocessors)
         self.model = model
 
-    def run(self, mode, run_info, **data):
+    def run(self, mode, run_info,  **data):
         if "gradient_regulariser" in run_info[mode]:
             raw_output = self.model(run_info[mode]["n_particles"], run_info[mode]["time_extent"], run_info[mode]["output_function"], run_info[mode]["gradient_regulariser"], **data)
         else:
@@ -308,6 +320,11 @@ class VanillaPydpfRun(ExperimentRun):
         means = {}
         batch_dict = {"time_average": {}}
         for k,v in raw_output.items():
+            if isinstance(run_info[mode]["output_function"][k], dSMC_ELBO) or isinstance(run_info[mode]["output_function"][k], VAE_ELBO):
+                batch_dict[k] = 0
+                batch_dict["time_average"][k] = 0
+                means[k] = v
+                continue
             batch_dict[k] = 1
             batch_dict["time_average"][k] = 0
             means[k] = torch.mean(v, dim=0)

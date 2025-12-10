@@ -139,6 +139,15 @@ def stack_dict(a, b):
             assert (False)
     return output_dict
 
+def semi_deep_copy(dictionary):
+    copied = {}
+    for k, v in dictionary.items():
+        if isinstance(v, dict):
+            copied[k] = semi_deep_copy(v)
+        else:
+            copied[k] = v
+    return copied
+
 def get_dataloader_info(full_dict):
     options = ["batch_size",
                "shuffle",

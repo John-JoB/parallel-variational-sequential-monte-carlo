@@ -1,3 +1,4 @@
+import pydpf
 import torch
 from pydpf import Module
 from typing import Iterable
@@ -61,3 +62,26 @@ class FCNN(Module):
 
     def forward(self, x):
         return self.net(x)
+
+"""
+class ResNet(pydpf.Module):
+
+    def __init__(self, input_dim:int, output_dim:int, hidden_dim:int|Iterable[int], activation_function: Module|Iterable[Module]|str|Iterable[str], output_function: Module|None, n_hidden_layers:int|None, device, block_size):
+        if not input_dim == hidden_dim:
+            self.proj = torch.nn.Linear(input_dim, hidden_dim)
+        else:
+            self.proj = lambda x: x
+        for block in range((n_hidden_layers+1)//block_size):
+
+
+
+        super().__init__(input_dim, output_dim, hidden_dim, activation_function, output_function, n_hidden_layers, device)
+
+
+
+    def forward(self, x):
+        print(torch.sum(torch.isnan(super().forward(x))))
+        print(torch.sum(torch.isnan(self.proj(x))))
+        return super().forward(x) + self.proj(x)
+
+"""
