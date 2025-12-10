@@ -206,7 +206,9 @@ if __name__ == "__main__":
     pvmc = make_pvmc(4, True)
     dummy_pvmc = make_dummy_pvmc(4, pvmc)
     dummy_pvmc.beta_observation = 10.
-    run_info = [make_run_info(dataset, dummy_pvmc.SSM), make_run_info(dataset, pvmc.SSM)]
+    dummy_info = make_run_info(dataset, dummy_pvmc.SSM)
+    dummy_info["epochs"] = 10
+    run_info = [dummy_info, make_run_info(dataset, pvmc.SSM)]
     #run_info = [make_filter_run_info(dataset, pvmc.SSM)]
     trainer_routine = make_trainer_routine(pvmc, dataset, dummy_pvmc)
     trainer_routine.fit("run", run_info, False)

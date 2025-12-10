@@ -192,12 +192,12 @@ class ParallelSmoother(Module):
         if time is not None:
             time = time[:time_extent+1]
         with torch.profiler.record_function("Proposal model"):
-            if self.mode == "model" or self.mode == "test":
-                with torch.no_grad():
-                    state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
-            else:
-                state, prop_density = self.proposal(n_particles, observation=observation, control=control)
-                prop_density = prop_density.detach()
+            #if self.mode == "model" or self.mode == "test":
+            #    with torch.no_grad():
+            #        state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
+            #else:
+            state, prop_density = self.proposal(n_particles, observation=observation, control=control, time=time, series_metadata=series_metadata)
+                #prop_density = prop_density.detach()
             #prop_density = torch.zeros_like(prop_density)
         with torch.profiler.record_function("Reshaping"):
             batched_data = ParallelSmoother._get_batched_dict(ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata, observation=observation, state=state)

@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 from pytorch_forecasting import autocorrelation
 from pathlib import Path
 import numpy as np
+import matplotlib.lines as mlines
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,21 +45,32 @@ def plot_auto_corrs(returns, spx, recon_obs, cut_spx):
     print(torch.mean(make_skewness(rescaled_recon_obs)))
     print(torch.mean(make_skewness(rescaled_cut_spx)))
     print(make_skewness(spx_returns))
-
-    plt.plot(torch.mean(autocorrelation(rescaled_returns, dim=0),dim=1).cpu().numpy()[:100])
+    plt.plot(autocorrelation(spx_returns, dim=0).cpu().numpy()[:120])
+    plt.plot(torch.mean(autocorrelation(rescaled_cut_spx, dim=0), dim=1).cpu().numpy())
     plt.plot(torch.mean(autocorrelation(rescaled_recon_obs, dim=0), dim=1).cpu().numpy())
-    plt.plot(torch.mean(autocorrelation(rescaled_cut_spx, dim=0), dim=1).cpu().numpy())
-    plt.plot(autocorrelation(spx_returns, dim=0).cpu().numpy()[:100])
+    plt.plot(torch.mean(autocorrelation(rescaled_returns, dim=0), dim=1).cpu().numpy()[:120])
+    plt.title("Autocorrelation of returns")
+    plt.ylabel("Autocorrelation")
+    plt.xlabel("Time gap (days)")
+    plt.legend(["Full SPX", "Truncated SPX", "Reconstructed SPX", "Simulated SPX"])
     plt.show()
-    plt.plot(torch.mean(autocorrelation(rescaled_returns**2, dim=0),dim=1).cpu().numpy()[:100])
-    plt.plot(torch.mean(autocorrelation(rescaled_recon_obs**2, dim=0), dim=1).cpu().numpy())
+    plt.plot(autocorrelation(spx_returns ** 2, dim=0).cpu().numpy()[:120])
     plt.plot(torch.mean(autocorrelation(rescaled_cut_spx, dim=0), dim=1).cpu().numpy())
-    plt.plot(autocorrelation(spx_returns**2, dim=0).cpu().numpy()[:100])
+    plt.plot(torch.mean(autocorrelation(rescaled_recon_obs ** 2, dim=0), dim=1).cpu().numpy())
+    plt.plot(torch.mean(autocorrelation(rescaled_returns ** 2, dim=0), dim=1).cpu().numpy()[:120])
+    plt.title("Autocorrelation of square returns")
+    plt.ylabel("Autocorrelation")
+    plt.xlabel("Time gap (days)")
+    plt.legend(["Full SPX", "Truncated SPX", "Reconstructed SPX", "Simulated SPX"])
     plt.show()
-    plt.plot(torch.mean(autocorrelation(torch.abs(rescaled_returns), dim=0),dim=1).cpu().numpy()[:100])
-    plt.plot(torch.mean(autocorrelation(torch.abs(rescaled_recon_obs), dim=0), dim=1).cpu().numpy())
+    plt.plot(autocorrelation(torch.abs(spx_returns), dim=0).cpu().numpy()[:120])
     plt.plot(torch.mean(autocorrelation(torch.abs(rescaled_cut_spx), dim=0), dim=1).cpu().numpy())
-    plt.plot(autocorrelation(torch.abs(spx_returns), dim=0).cpu().numpy()[:100])
+    plt.plot(torch.mean(autocorrelation(torch.abs(rescaled_recon_obs), dim=0), dim=1).cpu().numpy())
+    plt.plot(torch.mean(autocorrelation(torch.abs(rescaled_returns), dim=0), dim=1).cpu().numpy()[:120])
+    plt.title("Autocorrelation of absolute returns")
+    plt.ylabel("Autocorrelation")
+    plt.xlabel("Time gap (days)")
+    plt.legend(["Full SPX", "Truncated SPX", "Reconstructed SPX", "Simulated SPX"])
     plt.show()
 
 
@@ -94,18 +106,43 @@ def plot_paths(SSM, proposal, time_extent, mean, sd, dataset):
     returns2 = paths2.observation.squeeze()
     np_returns = returns.cpu().numpy()
     np_returns2 = returns2.cpu().numpy()
+    plt.title("Comparison of simulated and real paths")
     plt.plot(np_returns.squeeze(), alpha=0.1, marker='o', color='blue', linewidth=1, markersize=0.1)
     plt.plot(np.transpose(spx), alpha=0.1, marker='o', color='red', linewidth=1, markersize=0.1)
+    legend_lines = [
+        mlines.Line2D([], [], color='blue', alpha=1.0, label="Simulated"),
+        mlines.Line2D([], [], color='red', alpha=1.0, label="Real"),
+    ]
+    plt.legend(handles=legend_lines)
+    plt.ylabel("Returns")
+    plt.xlabel("Time passed (days)")
     plt.ylim(0, min(plt.ylim()[1], 10))
     plt.show()
+    plt.title("Comparison of simulated and real short paths")
     plt.plot(np_returns.squeeze()[:120], alpha=0.1, marker='o', color='blue', linewidth=1, markersize=0.1)
     plt.plot(recon_obs.cpu()[:, :10].numpy(), alpha=0.1, marker='o', color='green', linewidth=1, markersize=0.1)
     plt.plot(np.transpose(spx)[:120], alpha=0.1, marker='o', color='red', linewidth=1, markersize=0.1)
+    legend_lines = [
+        mlines.Line2D([], [], color='blue', alpha=1.0, label="Simulated"),
+        mlines.Line2D([], [], color='green', alpha=1.0, label="Reconstructed"),
+        mlines.Line2D([], [], color='red', alpha=1.0, label="Real"),
+    ]
+    plt.legend(handles=legend_lines)
+    plt.ylabel("Returns")
+    plt.xlabel("Time passed (days)")
     plt.ylim(0, min(plt.ylim()[1], 10))
     plt.show()
+    plt.title("Comparison of simulated paths")
     plt.plot(np_returns.squeeze(), alpha=0.1, marker='o', color='blue', linewidth=1, markersize=0.1)
     plt.plot(np_returns2.squeeze(), alpha=0.1, marker='o', color='red', linewidth=1, markersize=0.1)
+    legend_lines = [
+        mlines.Line2D([], [], color='blue', alpha=1.0, label="VIX = 0.5"),
+        mlines.Line2D([], [], color='red', alpha=1.0, label="VIX = 0"),
+    ]
     plt.ylim(0, min(plt.ylim()[1], 10))
+    plt.legend(handles=legend_lines)
+    plt.ylabel("Returns")
+    plt.xlabel("Time passed (days)")
     plt.show()
     plot_auto_corrs(returns, spx_raw, recon_obs, cut_spx)
 
