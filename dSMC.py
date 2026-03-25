@@ -83,6 +83,7 @@ class dSMC(pydpf.Module):
         out_state = out_state.permute(2, 0, 1, 3)
         out_state = out_state[:time_extent + 1]
         elbo = elbo.squeeze() + likelihood_zero.squeeze()
+        weight = weight.unsqueeze(0).expand(time_extent + 1, -1, -1)
         if isinstance(aggregation_function, dict):
             output = {}
             for name, function in aggregation_function.items():

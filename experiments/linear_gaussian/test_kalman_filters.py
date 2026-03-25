@@ -6,14 +6,14 @@ import pydpf
 import torch
 from pydpf import FilteringModel
 
-from experiments.linear_gaussian.kalman_stage import KalmanRun, Kalman_mean, Kalman_log_likelihood_factors, Kalman_MSE
+from experiments.linear_gaussian.kalman_stage import KalmanRun, Kalman_mean, Kalman_log_likelihood_factors, Kalman_MSE, Kalman_covariance
 from parallel_kalman import ParallelKalmanSmoother, ParallelKalmanFilter
 from models.linear_gaussian import learned_model, true_model
 from experiments.common.testing import Test_Runner
 from parallel_smoother_new import ParallelSmoother
 from proposal_to_output import ProposalRunner
 from truncated_pvmc import Truncated
-from smoother_outputs import MSE, MarginalSmoothingMean, dSMC_ELBO
+from smoother_outputs import MSE, MarginalSmoothingMean, dSMC_ELBO, State, Weight
 from pathlib import Path
 from experiments.common.training import TrainingStage, Trainer, VanillaPydpfRun
 from two_filter_smoother import TwoFilter
@@ -25,6 +25,67 @@ time_extent = 500
 
 def position_error(pvmc_state, smoother_state):
     return np.mean(np.sum((pvmc_state - smoother_state)**2, axis = -1))
+
+def sliced_w2_empirical_gaussian_vec(
+    x, w, m, Sigma, n_proj=100, eps=1e-12
+):
+    B, N, d = x.shape
+    x = torch.tensor(x, device = "cuda:0")
+    w = torch.tensor(w, device = "cuda:0")
+    m = torch.tensor(m, device = "cuda:0")
+    Sigma = torch.tensor(Sigma, device = "cuda:0")
+    device = x.device
+
+    # normalize weights
+    w = w / (w.sum(dim=1, keepdim=True) + eps)
+
+    # sample projections (shared across batch for variance reduction)
+    theta = torch.randn(n_proj, d, device=device)
+    theta = theta / (theta.norm(dim=1, keepdim=True) + eps)
+    # (P, d)
+
+    # project particles
+    # (B, P, N)
+    proj_x = torch.einsum('pd,bnd->bpn', theta, x)
+
+    # sort along particle axis
+    vals, idx = torch.sort(proj_x, dim=2)  # (B, P, N)
+
+    # reorder weights accordingly
+    w_expanded = w.unsqueeze(1).expand(B, n_proj, N)
+    w_sorted = torch.gather(w_expanded, 2, idx)
+
+    # cumulative weights
+    S = torch.cumsum(w_sorted, dim=2)
+    S_prev = torch.cat(
+        [torch.zeros(B, n_proj, 1, device=device), S[:, :, :-1]],
+        dim=2
+    )
+
+    # midpoint rule
+    u_mid = 0.5 * (S + S_prev)
+    u_mid = u_mid.clamp(eps, 1 - eps)
+
+    # projected Gaussian parameters
+    # mean: (B, P)
+    m_theta = torch.einsum('pd,bd->bp', theta, m)
+
+    # variance: θᵀ Σ θ
+    # (B, P)
+    Sigma_theta = torch.einsum('pd,bdk,pk->bp', theta, Sigma, theta)
+    sigma_theta = torch.sqrt(Sigma_theta + eps)
+
+    # quantiles
+    normal = torch.distributions.Normal(0.0, 1.0)
+    z = normal.icdf(u_mid)  # (B, P, N)
+
+    y = m_theta.unsqueeze(2) + sigma_theta.unsqueeze(2) * z
+
+    # 1D Wasserstein per projection
+    w2 = torch.sum(w_sorted * (vals - y) ** 2, dim=2)  # (B, P)
+
+    # average over projections
+    return w2.mean().item()  # (B,)
 
 def likelihood_error(pvmc_l, smoother_l):
     return np.mean((1 - np.exp(pvmc_l - smoother_l))**2)
@@ -101,8 +162,8 @@ def make_test_runs(kalman_filter, p_kalman_filter, p_kalman_smoother, pvmc, tfs,
     return kalman_test, p_kalman_test, p_smoother_test, pvmc_test, tfs_test
 
 def make_info(dataset):
-    run_info = {"return": {"mean" : "kalman_mean", "likelihood" : "likelihood", "MSE" : "MSE", "time" : "time"},
-                "output_function": {"kalman_mean": Kalman_mean(), "likelihood": Kalman_log_likelihood_factors(), "MSE": Kalman_MSE()},
+    run_info = {"return": {"mean" : "kalman_mean", "likelihood" : "likelihood", "MSE" : "MSE", "time" : "time", "cov": "Covariance"},
+                "output_function": {"kalman_mean": Kalman_mean(), "likelihood": Kalman_log_likelihood_factors(), "MSE": Kalman_MSE(), "Covariance": Kalman_covariance()},
                 "shuffle": False,
                 "batch_size": 64,
                 "device": "cuda:0",
@@ -111,25 +172,25 @@ def make_info(dataset):
     return run_info
 
 def make_pvmc_info(dataset):
-    run_info = {"return": {"mean" : "mean", "likelihood" : "likelihood", "MSE" : "MSE", "time" : "time"},
+    run_info = {"return": {"mean" : "mean", "likelihood" : "likelihood", "MSE" : "MSE", "time" : "time", "State": "State", "Weight": "Weight"},
                 "n_particles": 64,
                 "shuffle": False,
                 "batch_size": 16,
                 "collate_fn": dataset.collate,
                 "time_extent": time_extent,
                 "device": "cuda:0",
-                "output_function": {"mean": MarginalSmoothingMean(), "likelihood" :  dSMC_ELBO(),  "MSE": MSE()}}
+                "output_function": {"mean": MarginalSmoothingMean(), "likelihood" :  dSMC_ELBO(),  "MSE": MSE(), "State": State(), "Weight": Weight()}}
     return run_info
 
 def make_tfs_info(dataset):
-    run_info = {"return": {"mean": "mean", "likelihood": "likelihood", "MSE": "MSE", "time" : "time"},
+    run_info = {"return": {"mean": "mean", "likelihood": "likelihood", "MSE": "MSE", "time" : "time", "State": "State", "Weight": "Weight"},
                 "n_particles": 64,
                 "shuffle": False,
                 "batch_size": 64,
                 "collate_fn": dataset.collate,
                 "time_extent": time_extent,
                 "device": "cuda:0",
-                "output_function": {"mean": MarginalSmoothingMean(), "likelihood": dSMC_ELBO(), "MSE": MSE()}}
+                "output_function": {"mean": MarginalSmoothingMean(), "likelihood": dSMC_ELBO(), "MSE": MSE(), "State": State(), "Weight": Weight()}}
     return run_info
 
 def make_trainer_info(train_set, validation_set, test_set):
@@ -197,10 +258,10 @@ if __name__ == '__main__':
                    "TFS": lambda: tfs_t.test("tfs", tfs_info),
                    }
 
-    results_df = pd.DataFrame(index=pd.Index(experiments.keys(), name="Method"), columns = ["e_x", "e_l", "time"])
+    results_df = pd.DataFrame(index=pd.Index(experiments.keys(), name="Method"), columns = ["e_x", "e_l", "time", "W2"])
     results_dict = {}
     for method in experiments.keys():
-        results_dict[method] = np.zeros(3)
+        results_dict[method] = np.zeros(4)
 
     n_repeats = 10
     for i in range(n_repeats):
@@ -211,23 +272,31 @@ if __name__ == '__main__':
 
         smoother_result = experiments["RTS Smoother"]()
         smoother_mean = smoother_result["mean"]
+        smoother_cov = smoother_result["cov"]
         smoother_log_likelihood = smoother_result["likelihood"]
         smoother_log_likelihood = np.sum(smoother_log_likelihood, axis=0)
         smoother_time = smoother_result["time"]
         results_dict["RTS Smoother"][2] += smoother_time
         for method, run_func in experiments.items():
-            if method == "RTS Smoother":
+            if method == "RTS Smoother" or method == "Kalman Filter":
                 continue
             res = experiments[method]()
             pos_error = position_error(res["mean"], smoother_mean)
+
             if method == "Kalman Filter":
                 res["likelihood"] = np.sum(res["likelihood"], axis = 0)
+                res["W2"] = 0.
+            else:
+                last_state = res["State"][250]
+                last_weight = res["Weight"][250]
+                res["W2"] = sliced_w2_empirical_gaussian_vec(last_state, last_weight, smoother_mean[250], smoother_cov[250], 1000)
             print((res["likelihood"] - smoother_log_likelihood)[:10] )
             lik_error = likelihood_error(res["likelihood"], smoother_log_likelihood)
             print(f"MSE: {pos_error}")
             print(f"Likelihood: {lik_error}")
             print(f"Time: {res["time"]}")
-            result_arr = np.array([pos_error, lik_error, res["time"]])
+            print(f"W2: {res["W2"]}")
+            result_arr = np.array([pos_error, lik_error, res["time"], res["W2"]])
             results_dict[method] += result_arr
 
     for method, res in results_dict.items():

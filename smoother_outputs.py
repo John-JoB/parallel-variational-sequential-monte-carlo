@@ -25,6 +25,21 @@ class dSMC_ELBO2(Module):
     def forward(self, elbo, **empty):
         return elbo
 
+class State(Module):
+    need_weight = False
+    def __init__(self, **data):
+        super().__init__()
+
+    def forward(self, state, **data):
+        return state
+
+class Weight(Module):
+    need_weight = True
+    def __init__(self, **data):
+        super().__init__()
+
+    def forward(self, weight, **data):
+        return weight
 
 class VAE_ELBO(Module):
     need_weight = False
