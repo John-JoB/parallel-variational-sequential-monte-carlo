@@ -8,7 +8,7 @@ We have exported our python environment as a requirements.txt file which you may
 pip install -r requirements.txt
 ```
 
-but it is recommended that you install the version of PyTorch appropriate to your hardware by the command given on https://pytorch.org/get-started/locally/.
+but it is strongly recommended that you install the version of PyTorch appropriate to your compute platform by the command given on https://pytorch.org/get-started/locally/.
 
 Algorithms are implemented at in the top-level directory.
 
