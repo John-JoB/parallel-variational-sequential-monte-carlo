@@ -10,6 +10,9 @@ pip install -r requirements.txt
 
 but it is strongly recommended that you install the version of PyTorch appropriate to your compute platform by the command given on https://pytorch.org/get-started/locally/.
 
+Both the linear gaussian and lokta-volterra experiments use generated data, so make sure to run the data generation scripts first!
+
+
 Algorithms are implemented at in the top-level directory.
 
 The algorithms we implement here are:
