@@ -7,7 +7,7 @@ from models.linear_gaussian import learned_model, true_model
 from parallel_smoother_new import ParallelSmoother
 from proposal_to_output import ProposalRunner
 from truncated_pvmc import Truncated
-from smoother_outputs import MSE, VAE_ELBO, NegativeKernelLogLikelihood, MarginalSmoothingMean, dSMC_ELBO
+from smoother_outputs import MSE, VAE_ELBO, MarginalSmoothingMean, dSMC_ELBO
 from pathlib import Path
 from experiments.common.training import TrainingStage, Trainer, VanillaPydpfRun
 
@@ -111,10 +111,6 @@ def str_to_output(output_as_str, dx, device):
             return MSE()
         case "vae_elbo":
             return VAE_ELBO()
-        case "negative kernel log likelihood":
-            k = pydpf.MultivariateGaussian(torch.zeros(dx, device=device), torch.nn.Parameter(torch.eye(dx, device=device)), diagonal_cov=True)
-            KDE = pydpf.KernelMixture(k, torch.Generator(device=device), pydpf.MultinomialResampler(torch.Generator(device=device)))
-            return NegativeKernelLogLikelihood(KDE)
         case "mean":
             return MarginalSmoothingMean()
         case "elbo":

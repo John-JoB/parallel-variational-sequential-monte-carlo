@@ -8,7 +8,7 @@ from pathlib import Path
 from experiments.common.parameter_set import ParameterSet
 from experiments.common.training import TrainingStage, VanillaPydpfRun, Trainer
 from experiments.common.testing import Test_Runner
-from smoother_outputs import MSE, dSMC_ELBO, KernelLogLikelihood, VAE_ELBO
+from smoother_outputs import MSE, dSMC_ELBO, VAE_ELBO
 from mdps import MDPS
 import numpy as np
 from time import time
@@ -16,17 +16,13 @@ from math import floor
 import pandas as pd
 from diffusion_DPF import DiffusionDPF
 import traceback
-from scipy.stats import wasserstein_distance_nd
-from models.generic_nets.FCNN import FCNN
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 folder = Path("./experiments/lotka_volterra/data/")
 results_folder = Path("./experiments/lotka_volterra/results/")
 table_results = results_folder / "table_results.csv"
 raw_results = results_folder / "raw_results.csv"
-#experiments = ["Stop-grad", "Soft", "MDPS" ]
-#experiments = ["Diffusion"]
-experiments = ["MDPS"]#, "PVMC", "Stop-grad", "Soft", "Diffusion", "DSSM"]
+experiments = ["Diffusion"]
 repeats = 20
 epochs = 100
 
@@ -85,7 +81,11 @@ def make_soft_dpf(SSM, generator):
 
 #Diffusion DPF
 def make_diff_dpf(SSM, generator):
-    return DiffusionDPF(SSM, resampling_generator=generator), 0
+    return DiffusionDPF(SSM, resampling_generator=generator, use_modified=False), 0
+
+#Diffusion DPF
+def make_diff_dpf_mod(SSM, generator):
+    return DiffusionDPF(SSM, resampling_generator=generator, use_modified=True), 0
 
 #DSSM
 def make_DSSM(SSM, generator):
@@ -408,6 +408,8 @@ def add_experiment(experiment_name):
             return make_mdps
         case "Diffusion":
             return make_diff_dpf
+        case "Diffusion-Mod":
+            return make_diff_dpf_mod
         case "DSSM":
             return make_DSSM
 
