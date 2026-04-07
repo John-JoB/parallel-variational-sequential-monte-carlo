@@ -258,6 +258,6 @@ if __name__ == '__main__':
     results_df = pd.DataFrame(columns=["Method", "Time Extent", "Forward", "Backward", "Variance"])
     for experiment in experiments:
         for time_e in times:
-            f, b, v = simple_test_loop(experiment, models[experiment], dataset, time_e, 20)
+            f, b, v = simple_test_loop(experiment, models[experiment], dataset, time_e, 2)
             results_df.loc[len(results_df)] = {"Method": experiment, "Time Extent": time_e, "Forward": f, "Backward": b, "Variance": v}
     results_df.to_csv(Path("./experiments/linear_gaussian/results_timing.csv"))

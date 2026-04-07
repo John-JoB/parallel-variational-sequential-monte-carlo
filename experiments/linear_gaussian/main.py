@@ -1,3 +1,5 @@
+"""Script not used to generate any results from the paper"""
+
 import argparse
 
 import pydpf
@@ -64,7 +66,7 @@ def make_stage_info(train_info, validation_info, test_info, train_loss, target, 
     info =  {"train": train_info,
         "validation": validation_info,
         "test": test_info,
-        "loss": f"- time_average.{train_loss}",
+        "loss": f"-time_average.{train_loss}",
         "print_each_epoch": printed_dict,
         "epochs": epochs,
         "device": device,
@@ -86,9 +88,9 @@ def add_arguments():
     parser.add_argument("--time_extent_test", action="store", type=int, default=0)
     parser.add_argument("--epochs", action="store", type=int, default=50)
     parser.add_argument("--device", action="store", type=str, default="cuda:0")
-    parser.add_argument("--output_functions", action="store", type=str, default="MSE", nargs="+")
-    parser.add_argument("--loss", action="store", type=str, default="MSE")
-    parser.add_argument("--target", action="store", type=str, default="MSE")
+    parser.add_argument("--output_functions", action="store", type=str, default="elbo", nargs="+")
+    parser.add_argument("--loss", action="store", type=str, default="elbo")
+    parser.add_argument("--target", action="store", type=str, default="elbo")
     parser.add_argument("--experiment", action="store", type=str, default="PVMC")
     parser.add_argument("--path", action="store", type=str, default="./experiments/linear_gaussian/data/")
     parser.add_argument("--save_model_path", action="store", type=str, default="./experiments/linear_gaussian/saved_models/")
@@ -147,6 +149,7 @@ def make_trainer_stage(experiment, dx, dy, device, train_set, validation_set, te
     return model, stage
 
 if __name__ == "__main__":
+    print("This is testing script it was not used to generate any results in our paper. test_against_kalman_filters.py is the script that generates the main results from Section 5.1")
     args = add_arguments().parse_args()
     device_str = args.device
     device = torch.device(device_str)
