@@ -22,7 +22,7 @@ folder = Path("./experiments/lotka_volterra/data/")
 results_folder = Path("./experiments/lotka_volterra/results/")
 table_results = results_folder / "table_results.csv"
 raw_results = results_folder / "raw_results.csv"
-experiments = ["Diffusion"]
+experiments = ["Diffusion", "PVMC", "Soft", "Stop-grad", "MDPS", "Diffusion-Mod", "DSSM"]
 repeats = 20
 epochs = 100
 

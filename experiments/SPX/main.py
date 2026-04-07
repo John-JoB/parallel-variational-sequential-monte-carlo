@@ -14,8 +14,8 @@ import einops
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
-#options experiments = ["PVMC, VAE, TCVAE, Soft, DMM"]
-experiments = ["TCVAE"]
+#options: experiments = ["PVMC, VAE, TCVAE, Soft, DMM"]
+experiments = ["PVMC, VAE, TCVAE, Soft, DMM"]
 
 
 
