@@ -2,11 +2,7 @@ import pydpf
 from pydpf import Module
 import torch
 from torch import Tensor
-import einops
-from warnings import warn
-from math import floor
 from math import log
-import opt_einsum
 from parallel_scan import parallel_associative_scan
 
 def apply_time_extent(time_extent, data):

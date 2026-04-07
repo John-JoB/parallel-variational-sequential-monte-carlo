@@ -6,7 +6,6 @@ from pytorch_forecasting import autocorrelation
 from pathlib import Path
 import numpy as np
 import matplotlib.lines as mlines
-from sympy.printing.pretty.pretty_symbology import line_width
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

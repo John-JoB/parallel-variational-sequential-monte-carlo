@@ -2,7 +2,6 @@ import torch
 
 from pydpf import Module
 from torch import Tensor
-import pydpf
 from math import log
 
 

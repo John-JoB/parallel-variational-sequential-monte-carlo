@@ -1,6 +1,5 @@
 import pydpf
 import torch
-from scipy.stats import hmean
 from torch import Tensor
 from parallel_smoother_new import ParallelSmoother
 import einops

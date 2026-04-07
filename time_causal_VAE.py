@@ -2,8 +2,6 @@ import pydpf
 import torch
 from math import ceil
 
-from experiments.linear_gaussian.test_kalman_filters import time_extent
-
 
 def L1ReconLoss(observation, recon_obs):
     return torch.sum(torch.abs(observation - recon_obs), dim=(0, 2))

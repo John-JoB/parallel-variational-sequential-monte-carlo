@@ -2,8 +2,6 @@ from pathlib import Path
 import time
 import pickle
 import json
-
-import torch
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from models.generic_nets.module_list import  ModuleList

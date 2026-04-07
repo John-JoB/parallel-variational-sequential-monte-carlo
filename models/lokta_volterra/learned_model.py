@@ -1,4 +1,3 @@
-import einops
 import pydpf
 import torch
 from models.generic_nets.FCNN import FCNN

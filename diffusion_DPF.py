@@ -3,8 +3,7 @@ import pydpf
 from math import log
 
 class DiffusionResamplerModified(pydpf.Module):
-    # SDE version, modified from the implementation given in the repository attached to the original paper.
-    #Modified slightly to be more stable.
+    #SDE version, modified slightly to be more stable.
 
     def __init__(self, alpha, T, n_steps, generator):
         super().__init__()
@@ -114,7 +113,7 @@ class DiffusionResampler(pydpf.Module):
             return torch.sum(torch.exp(log_alps)[..., None].unsqueeze(2) * (-(x.unsqueeze(1) - mts.unsqueeze(2)) / sig2ts.unsqueeze(2)), dim=1)
 
         def drift(x, sg, sig2ts):
-            return 2 * b2 * s(x, sg, sig2ts)
+            return 2 * b2 * s(x, sg, sig2ts) + a * (mu - x)
 
         sgs, sig2ts = fwd_coeffs(self.T - self.ts)
         x_o = mu + (stat_vars ** 0.5) * self.dist.sample((mu.size(0), n, mu.size(2))).squeeze(-1)

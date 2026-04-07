@@ -1,4 +1,3 @@
-import numpy as np
 import pydpf
 from pydpf import Module
 import torch
@@ -6,11 +5,8 @@ from torch import Tensor
 import einops
 from math import log, ceil
 import opt_einsum as oe
-from parallel_scan import parallel_associative_scan, parallel_associative_reduce
-from typing import Callable
-from models.generic_nets.FCNN import FCNN
+from parallel_scan import parallel_associative_reduce
 
-from smoother_outputs import dSMC_ELBO, VAE_ELBO
 
 
 class ParallelSmoother(Module):

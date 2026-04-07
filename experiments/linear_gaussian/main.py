@@ -5,7 +5,6 @@ import torch
 
 from models.linear_gaussian import learned_model, true_model
 from parallel_smoother_new import ParallelSmoother
-from proposal_to_output import ProposalRunner
 from truncated_pvmc import Truncated
 from smoother_outputs import MSE, VAE_ELBO, MarginalSmoothingMean, dSMC_ELBO
 from pathlib import Path

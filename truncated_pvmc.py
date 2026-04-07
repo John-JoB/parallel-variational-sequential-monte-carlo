@@ -3,7 +3,6 @@ import torch
 from pydpf import Module
 from torch import Tensor
 import pydpf
-from math import log
 import einops
 from parallel_smoother_new import ParallelSmoother
 

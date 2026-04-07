@@ -1,6 +1,5 @@
 import pydpf
 
-from experiments.stochastic_vol.main import time_extent
 from models.lokta_volterra import true_model as tm
 import torch
 from pathlib import Path

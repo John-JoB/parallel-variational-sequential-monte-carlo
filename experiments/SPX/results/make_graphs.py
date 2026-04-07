@@ -5,7 +5,6 @@ import seaborn as sns
 from pathlib import Path
 import einops
 import torch
-from polars import element
 from pytorch_forecasting import autocorrelation
 import matplotlib as mpl
 

@@ -1,4 +1,3 @@
-import pydpf
 import torch
 from pydpf import Module
 from typing import Iterable
