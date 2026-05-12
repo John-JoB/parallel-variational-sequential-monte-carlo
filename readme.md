@@ -1,6 +1,6 @@
 This is the repository for our paper Efficient Learning of Deep State Space Models via Importance Smoothing.
 
-Important: all code must be run with the top level directory i.e. /Parallel variational sequential monte carlo/ as the working directory.
+Important: all scripts in this repository must be run with the top level directory i.e. /Parallel variational sequential monte carlo/ as the working directory.
 
 We have exported our python environment as a requirements.txt file which you may install by
 

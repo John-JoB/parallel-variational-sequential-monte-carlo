@@ -24,7 +24,7 @@ def position_error(pvmc_state, smoother_state):
     return np.mean(np.sum((pvmc_state - smoother_state)**2, axis = -1))
 
 def sliced_w2_empirical_gaussian_vec(
-    x, w, m, Sigma, n_proj=100, eps=1e-12
+    x, w, m, Sigma, n_proj=512, eps=1e-12
 ):
     B, N, d = x.shape
     x = torch.tensor(x, device = "cuda:0")
@@ -83,6 +83,19 @@ def sliced_w2_empirical_gaussian_vec(
 
     # average over projections
     return w2.mean().item()  # (B,)
+
+def sliced_w2_guassian_gaussian_vec(m1, Sigma1, m2, Sigma2, n_proj=512, eps=1e-12):
+    B, d = m1.shape
+    theta = torch.randn(n_proj, d, device=device)
+    theta = theta / (theta.norm(dim=1, keepdim=True) + eps)
+    m1_theta = torch.einsum('pd,bd->bp', theta, m1)
+    m2_theta = torch.einsum('pd,bd->bp', theta, m2)
+    Sigma1_theta = torch.einsum('pd,bdk,pk->bp', theta, Sigma1, theta)
+    Sigma2_theta = torch.einsum('pd,bdk,pk->bp', theta, Sigma2, theta)
+    sigma1_theta = torch.sqrt(Sigma1_theta + eps)
+    sigma2_theta = torch.sqrt(Sigma2_theta + eps)
+    w2 = (m1_theta - m2_theta)**2 + (sigma1_theta - sigma2_theta)**2
+    return w2.mean().item()
 
 def likelihood_error(pvmc_l, smoother_l):
     return np.mean((1 - np.exp(pvmc_l - smoother_l))**2)
@@ -275,18 +288,18 @@ if __name__ == '__main__':
         smoother_time = smoother_result["time"]
         results_dict["RTS Smoother"][2] += smoother_time
         for method, run_func in experiments.items():
-            if method == "RTS Smoother" or method == "Kalman Filter":
+            if method == "RTS Smoother":# or method == "Kalman Filter":
                 continue
             res = experiments[method]()
             pos_error = position_error(res["mean"], smoother_mean)
 
             if method == "Kalman Filter":
                 res["likelihood"] = np.sum(res["likelihood"], axis = 0)
-                res["W2"] = 0.
+                res["W2"] = sliced_w2_guassian_gaussian_vec(res["mean"][250], res["cov"][250], smoother_mean[250], smoother_cov[250], n_proj=1024)
             else:
                 last_state = res["State"][250]
                 last_weight = res["Weight"][250]
-                res["W2"] = sliced_w2_empirical_gaussian_vec(last_state, last_weight, smoother_mean[250], smoother_cov[250], 1000)
+                res["W2"] = sliced_w2_empirical_gaussian_vec(last_state, last_weight, smoother_mean[250], smoother_cov[250], 1024)
             print((res["likelihood"] - smoother_log_likelihood)[:10] )
             lik_error = likelihood_error(res["likelihood"], smoother_log_likelihood)
             print(f"MSE: {pos_error}")

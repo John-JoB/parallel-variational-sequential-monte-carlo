@@ -149,7 +149,7 @@ def make_trainer_stage(experiment, dx, dy, device, train_set, validation_set, te
     return model, stage
 
 if __name__ == "__main__":
-    print("This is testing script it was not used to generate any results in our paper. test_against_kalman_filters.py is the script that generates the main results from Section 5.1")
+    print("This is a testing script it was not used to generate any results in our paper. test_against_kalman_filters.py is the script that generates the main results from Section 5.1")
     args = add_arguments().parse_args()
     device_str = args.device
     device = torch.device(device_str)
