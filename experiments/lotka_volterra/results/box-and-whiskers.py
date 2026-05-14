@@ -4,7 +4,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib as mpl
 
-prefix = "self"
+prefix = "W2"
 
 def set_icml_style():
     sns.set_theme(
@@ -58,7 +58,7 @@ def make_format_for_seaborn(labels, data):
 
 if __name__ == "__main__":
     set_icml_style()
-    raw_results = pd.read_csv("./experiments/lotka_volterra/results/raw_results_backup.csv", index_col=0)
+    raw_results = pd.read_csv("./experiments/lotka_volterra/results/raw_results.csv", index_col=0)
     res = []
     experiments = []
     for experiment in raw_results.index:
@@ -75,7 +75,7 @@ if __name__ == "__main__":
 
     sns.stripplot(data = plot_df, x="label", y="value", color="black", marker="x", size=4, linewidth=1)
     #ax.set_yscale("log")
-    ax.set_ylabel("Mean Squared Error")
+    ax.set_ylabel("Mean Squared Sliced 2-Wasserstein Distance")
     ax.set_xlabel("")
     plt.tight_layout()
     plt.savefig(f'./experiments/lotka_volterra/results/{prefix}_boxplot.pdf', bbox_inches='tight')

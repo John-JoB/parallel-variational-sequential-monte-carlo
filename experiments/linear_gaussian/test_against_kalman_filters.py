@@ -4,7 +4,7 @@ import pandas as pd
 import pydpf
 import torch
 from pydpf import FilteringModel
-
+from scipy.linalg import sqrtm
 from experiments.linear_gaussian.kalman_stage import KalmanRun, Kalman_mean, Kalman_log_likelihood_factors, Kalman_MSE, Kalman_covariance
 from parallel_kalman import ParallelKalmanSmoother, ParallelKalmanFilter
 from models.linear_gaussian import learned_model, true_model
@@ -23,6 +23,61 @@ time_extent = 500
 def position_error(pvmc_state, smoother_state):
     return np.mean(np.sum((pvmc_state - smoother_state)**2, axis = -1))
 
+def Gauss_KSD(x, w, m, Sigma, l):
+    B, N, d = x.shape
+    x = torch.tensor(x, device="cuda:0", dtype=torch.float64)
+    w = torch.tensor(w, device="cuda:0", dtype=torch.float64)
+    m = torch.tensor(m, device="cuda:0", dtype=torch.float64)
+    Sigma = torch.tensor(Sigma, device="cuda:0", dtype=torch.float64)
+    device = x.device
+
+    precision = torch.linalg.inv(Sigma)
+    score = -(x - m.unsqueeze(1)) @ precision
+
+    l2 = l**2
+    delta = x.unsqueeze(1) - x.unsqueeze(2)
+    dist_matrix = torch.sum((delta)**2, dim = -1)
+    k = torch.exp(-dist_matrix / (2*l2))
+    t1 = (score @ torch.transpose(score, 1, 2))
+    t2 = (score.unsqueeze(1) * delta ).sum(dim = -1) / l2
+    t3 = -(score.unsqueeze(2) * delta).sum(dim=-1) / l2
+    t4 = (d/l2 - dist_matrix/l2**2)
+    stein_kernel = (t1 + t2 + t3 + t4)*k
+    weight = torch.exp(pydpf.normalise(w)[0])
+    return torch.mean(weight @ stein_kernel @ weight.unsqueeze(-1)).item()
+
+def Gauss_w2(m1, Sigma1, m2, Sigma2):
+    def sqrtm_psd(A):
+        eigvals, eigvecs = np.linalg.eigh(A)
+        eigvals = np.clip(eigvals, 0, None)
+        val_matrix = np.eye(eigvals.shape[-1]) * np.sqrt(eigvals)[:, None, :]
+        return eigvecs @ val_matrix @ np.swapaxes(eigvecs, -2, -1)
+
+    m1 = torch.tensor(m1, device="cuda:0", dtype=torch.float64)
+    m2 = torch.tensor(m2, device="cuda:0", dtype=torch.float64)
+    Sigma1_t = torch.tensor(Sigma1, device="cuda:0", dtype=torch.float64)
+    Sigma2_t = torch.tensor(Sigma2, device="cuda:0", dtype=torch.float64)
+    sqrt_Sigma_2 = sqrtm_psd(Sigma2)
+    t1 = sqrtm_psd(sqrt_Sigma_2 @ Sigma1 @ sqrt_Sigma_2)
+    t1 = torch.tensor(t1, device="cuda:0", dtype=torch.float64)
+    tr = torch.einsum("...ii", Sigma1_t + Sigma2_t - 2 * t1)
+    return torch.mean(torch.sum((m1 - m2) ** 2, dim=-1) + tr).item()
+
+
+def EMPGauss_w2(x, w, m, Sigma):
+    x = torch.tensor(x, device="cuda:0", dtype=torch.float64)
+    w = torch.tensor(w, device="cuda:0", dtype=torch.float64)
+    w = pydpf.normalise(w)[0]
+    w = torch.exp(w)
+    m_emp = torch.sum(x * w[..., None], dim = 1)
+    x_centered = x - m_emp.unsqueeze(1)
+    Sigma_emp = torch.transpose((w[..., None] * x_centered), -2, -1) @ x_centered
+    Sigma_emp_np = Sigma_emp.cpu().numpy()
+    return Gauss_w2(m_emp.cpu().numpy(), Sigma_emp_np, m, Sigma)
+
+
+
+'''
 def sliced_w2_empirical_gaussian_vec(
     x, w, m, Sigma, n_proj=512, eps=1e-12
 ):
@@ -33,9 +88,9 @@ def sliced_w2_empirical_gaussian_vec(
     Sigma = torch.tensor(Sigma, device = "cuda:0")
     device = x.device
 
-    # normalize weights
-    w = w / (w.sum(dim=1, keepdim=True) + eps)
-
+    w, _ = pydpf.normalise(w)
+    w = torch.exp(w)
+    print(torch.min(w))
     # sample projections (shared across batch for variance reduction)
     theta = torch.randn(n_proj, d, device=device)
     theta = theta / (theta.norm(dim=1, keepdim=True) + eps)
@@ -81,11 +136,15 @@ def sliced_w2_empirical_gaussian_vec(
     # 1D Wasserstein per projection
     w2 = torch.sum(w_sorted * (vals - y) ** 2, dim=2)  # (B, P)
 
-    # average over projections
-    return w2.mean().item()  # (B,)
+    # average over projections then batches
+    return torch.sqrt(w2.mean(dim=1)).mean().item()  # (B,)
 
 def sliced_w2_guassian_gaussian_vec(m1, Sigma1, m2, Sigma2, n_proj=512, eps=1e-12):
     B, d = m1.shape
+    m1 = torch.tensor(m1, device = "cuda:0")
+    Sigma1 = torch.tensor(Sigma1, device = "cuda:0")
+    m2 = torch.tensor(m2, device = "cuda:0")
+    Sigma2 = torch.tensor(Sigma2, device = "cuda:0")
     theta = torch.randn(n_proj, d, device=device)
     theta = theta / (theta.norm(dim=1, keepdim=True) + eps)
     m1_theta = torch.einsum('pd,bd->bp', theta, m1)
@@ -95,7 +154,8 @@ def sliced_w2_guassian_gaussian_vec(m1, Sigma1, m2, Sigma2, n_proj=512, eps=1e-1
     sigma1_theta = torch.sqrt(Sigma1_theta + eps)
     sigma2_theta = torch.sqrt(Sigma2_theta + eps)
     w2 = (m1_theta - m2_theta)**2 + (sigma1_theta - sigma2_theta)**2
-    return w2.mean().item()
+    return torch.sqrt(w2.mean(dim=1)).mean().item()
+'''
 
 def likelihood_error(pvmc_l, smoother_l):
     return np.mean((1 - np.exp(pvmc_l - smoother_l))**2)
@@ -261,19 +321,20 @@ if __name__ == '__main__':
 
     del t_dataset, v_dataset
     experiments = {"dSMC": lambda: dSMC_t.test("dSMC", dsmc_info),
-                    "Kalman Filter": lambda: p_filter_t.test("p_filter", info),
-                   "RTS Smoother": lambda: p_smoother_t.test("p_smoother", info),
+                    "Kalman Filter": lambda: p_filter_t.test("k_filter", info),
+                   "RTS Smoother": lambda: p_smoother_t.test("k_smoother", info),
                    "PVMC Oracle": lambda: pvmc_t.test("pvmc_oracle", pvmc_info),
                    "PVMC": lambda: learned_pvmc_t.test("pvmc", pvmc_info),
                    "TFS": lambda: tfs_t.test("tfs", tfs_info),
                    }
 
-    results_df = pd.DataFrame(index=pd.Index(experiments.keys(), name="Method"), columns = ["e_x", "e_l", "time", "W2"])
+    results_df = pd.DataFrame(index=pd.Index(experiments.keys(), name="Method"), columns = ["e_x", "e_l", "time", "KSD", "W2"])
     results_dict = {}
     for method in experiments.keys():
-        results_dict[method] = np.zeros(4)
+        results_dict[method] = np.zeros(5)
 
     n_repeats = 10
+    kernel_bandwidth = None
     for i in range(n_repeats):
         #dataset = get_only_test_data(Path("./experiments/linear_gaussian/data/"), 5, 5)
         #dataset.apply(lambda observation, **d: observation[:, i:i+1].expand(*observation.shape), "observation")
@@ -283,6 +344,16 @@ if __name__ == '__main__':
         smoother_result = experiments["RTS Smoother"]()
         smoother_mean = smoother_result["mean"]
         smoother_cov = smoother_result["cov"]
+        if kernel_bandwidth is None:
+            Sigma = torch.tensor(smoother_cov[250], device="cuda:0", dtype=torch.float64)
+            m = torch.tensor(smoother_mean[250], device="cuda:0", dtype=torch.float64)
+            sqrt_cov = torch.linalg.cholesky(Sigma)
+            ref_particles = torch.randn((m.size(0), 64, m.size(-1)), device="cuda:0", dtype=torch.float64).unsqueeze(-1)
+            ref_particles = m.unsqueeze(1) + (sqrt_cov.unsqueeze(1) @ ref_particles).squeeze()
+            ref_dist_matrix = torch.sum((ref_particles.unsqueeze(1) - ref_particles.unsqueeze(2)) ** 2, dim=-1)
+            bandwidths = torch.median(ref_dist_matrix.flatten(1, 2), dim=1)[0] / 2
+            kernel_bandwidth = torch.mean(bandwidths).sqrt()
+
         smoother_log_likelihood = smoother_result["likelihood"]
         smoother_log_likelihood = np.sum(smoother_log_likelihood, axis=0)
         smoother_time = smoother_result["time"]
@@ -295,18 +366,20 @@ if __name__ == '__main__':
 
             if method == "Kalman Filter":
                 res["likelihood"] = np.sum(res["likelihood"], axis = 0)
-                res["W2"] = sliced_w2_guassian_gaussian_vec(res["mean"][250], res["cov"][250], smoother_mean[250], smoother_cov[250], n_proj=1024)
+                res["KSD"] = torch.nan
+                res["W2"] = Gauss_w2(res["mean"][250], res["cov"][250], smoother_mean[250], smoother_cov[250])
             else:
                 last_state = res["State"][250]
                 last_weight = res["Weight"][250]
-                res["W2"] = sliced_w2_empirical_gaussian_vec(last_state, last_weight, smoother_mean[250], smoother_cov[250], 1024)
-            print((res["likelihood"] - smoother_log_likelihood)[:10] )
+                res["KSD"] = Gauss_KSD(last_state, last_weight, smoother_mean[250], smoother_cov[250], kernel_bandwidth)
+                res["W2"] = EMPGauss_w2(last_state, last_weight, smoother_mean[250], smoother_cov[250])
             lik_error = likelihood_error(res["likelihood"], smoother_log_likelihood)
             print(f"MSE: {pos_error}")
             print(f"Likelihood: {lik_error}")
             print(f"Time: {res["time"]}")
-            print(f"W2: {res["W2"]}")
-            result_arr = np.array([pos_error, lik_error, res["time"], res["W2"]])
+            print(f"KSD: {res["KSD"]}")
+            print(f"Gauss-fit W2: {res["W2"]}")
+            result_arr = np.array([pos_error, lik_error, res["time"], res["KSD"], res["W2"]])
             results_dict[method] += result_arr
 
     for method, res in results_dict.items():

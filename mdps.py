@@ -5,6 +5,10 @@ from torch import Tensor
 import torch
 import numpy as np
 from math import log
+from importlib.metadata import version
+from packaging.version import Version
+
+pydpf_version = Version(version("pydpf"))
 
 class MDPS(Module):
 
@@ -47,9 +51,9 @@ class MDPS(Module):
             self.aggregation_function = torch.nn.ModuleDict(aggregation_function)
         data = self._get_existing_data(ground_truth=ground_truth, control=control, time=time, series_metadata=series_metadata)
         observation = observation[:time_extent+1]
-        forward_res = self.forward_filter(n_particles=n_particles, time_extent=time_extent, observation=observation, aggregation_function={"state": pydpf.State(), "weight": pydpf.Weight()}, gradient_regulariser=gradient_regulariser, **data)
+        forward_res = self.forward_filter(n_particles=n_particles, time_extent=time_extent, observation=observation, aggregation_function={"state": pydpf.State(), "L": pydpf.LogLikelihoodFactors()}, gradient_regulariser=gradient_regulariser, **data)
         forward_state = forward_res["state"]
-        forward_weight = forward_res["weight"]
+        forward_likelihood = forward_res["L"]
         backward_data = {k:torch.flip(v, (0,)) for k,v in data.items()}
         backward_state = self.backward_filter(n_particles=n_particles, time_extent=time_extent, observation=torch.flip(observation, (0,)), aggregation_function=pydpf.State(), gradient_regulariser=gradient_regulariser, **backward_data)
         #Don't actually sample the particles, just take all of them. This is unbiased due to GMIS Elvira 2015
@@ -65,7 +69,10 @@ class MDPS(Module):
         output_weights = combination_weights - combined_integrated_weight.detach()
         #Could be vectorised, but this is hardly going to be the performance bottleneck
         output_weights, elbo_factors = pydpf.normalise(output_weights)
-        elbo = torch.sum(torch.logsumexp(forward_weight, dim = -1), dim=0) - log(n_particles)
+        #Bug work around
+        if pydpf_version <= Version("1.1.3") and self.training:
+            forward_likelihood = forward_likelihood - log(n_particles)
+        elbo = torch.sum(forward_likelihood, dim=0).squeeze()
         if output_dict:
             output = {}
             for k, v in aggregation_function.items():

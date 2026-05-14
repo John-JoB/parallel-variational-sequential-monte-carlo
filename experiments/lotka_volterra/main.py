@@ -22,7 +22,7 @@ folder = Path("./experiments/lotka_volterra/data/")
 results_folder = Path("./experiments/lotka_volterra/results/")
 table_results = results_folder / "table_results.csv"
 raw_results = results_folder / "raw_results.csv"
-experiments = ["PVMC", "Soft", "Stop-grad", "MDPS", "DSSM"]
+experiments = ["MDPS"]
 repeats = 20
 epochs = 100
 
@@ -165,8 +165,8 @@ def make_dssm_tvt_info(train_set, validation_set, test_set, n_particles, batch_s
     return train_info, validation_info, test_info
 
 def make_mdps_tvt_info(train_set, validation_set, test_set, n_particles, batch_size, time_extent, generator):
-    output_kernel = make_kernel(generator, 0.5)
-    output_knll = pydpf.NegLogDataLikelihood_Loss(output_kernel)
+    #output_kernel = make_kernel(generator, 0.5)
+    #output_knll = pydpf.NegLogDataLikelihood_Loss(output_kernel)
     train_info = {"n_particles": n_particles[0],
                   "batch_size": batch_size[0],
                   "collate_fn": train_set.collate,
