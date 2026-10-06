@@ -1,4 +1,6 @@
 import torch
+from win32gui import SetMapMode
+
 from models.lokta_volterra import learned_model as lm
 from models.lokta_volterra import true_model as tm
 from models.lokta_volterra import extra_components_for_mdps as ec
@@ -22,7 +24,7 @@ folder = Path("./experiments/lotka_volterra/data/")
 results_folder = Path("./experiments/lotka_volterra/results/")
 table_results = results_folder / "table_results.csv"
 raw_results = results_folder / "raw_results.csv"
-experiments = ["MDPS"]
+experiments = ["PVMC"]
 repeats = 20
 epochs = 100
 
@@ -87,6 +89,20 @@ def make_diff_dpf(SSM, generator):
 def make_diff_dpf_mod(SSM, generator):
     return DiffusionDPF(SSM, resampling_generator=generator, use_modified=True), 0
 
+class Simple(pydpf.Module):
+    def __init__(self, SSM):
+        super().__init__()
+        self.SSM = SSM
+
+    def forward(self, n_particles, time_extent, output, observation, ground_truth, **kwargs):
+        p_0 = self.SSM.prior_model.log_density(state = ground_truth[0])[:,0]
+        p = self.SSM.dynamic_model.log_density(state = ground_truth[1:], prev_state=ground_truth[:-1])
+        h = self.SSM.observation_model.score(observation=observation, state=ground_truth.unsqueeze(-2)).squeeze()
+        return {"MSE": torch.zeros(observation.size(0), observation.size(1), device=observation.device), "ELBO": torch.mean(torch.sum(p, dim=0) + torch.sum(h, dim=0) + p_0, dim=-1)}
+
+#def make_pvmc(SSM, generator):
+#    return Simple(SSM), 1
+
 #DSSM
 def make_DSSM(SSM, generator):
     proposal_model = lm.proposal_model(device=device, generator=generator)
@@ -133,7 +149,7 @@ def make_smoother_tvt_info(train_set, validation_set, test_set, n_particles, bat
                   "batch_size": batch_size[0],
                   "collate_fn": train_set.collate,
                   "time_extent": time_extent[0],
-                  "output_function": {"ELBO": dSMC_ELBO(), "MSE": MSE()}}
+                  "output_function": {"ELBO": dSMC_ELBO(), "MSE": MSE(lambda state, **data: state[..., :1])}}
     validation_info = {"n_particles": n_particles[1],
                   "batch_size": batch_size[1],
                   "collate_fn": validation_set.collate,
@@ -171,7 +187,7 @@ def make_mdps_tvt_info(train_set, validation_set, test_set, n_particles, batch_s
                   "batch_size": batch_size[0],
                   "collate_fn": train_set.collate,
                   "time_extent": time_extent[0],
-                  "output_function": {"ELBO": dSMC_ELBO(), "MSE": MSE()}}
+                  "output_function": {"ELBO": dSMC_ELBO(), "MSE": MSE(lambda state, **data: state[..., 0])}}
     validation_info = {"n_particles": n_particles[1],
                   "batch_size": batch_size[1],
                   "collate_fn": validation_set.collate,
@@ -292,12 +308,13 @@ def increase_to_size(data_list, size):
 
 def train_and_test_alg(create_model, experiment):
     train_set, validation_set, test_set = get_data(folder)
+    #train_set = train_set.select([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     n_particles = [32] * 3
     batch_size = [16] * 3
     time_extent = [256] * 3
     generator = torch.Generator(device=device).manual_seed(0)
     SSM = make_SSM(generator)
-
+    train_set.apply(lambda state, **kwargs: state[..., :0], "state")
     _, is_smoother = create_model(SSM, generator)
 
     if is_smoother == 1:

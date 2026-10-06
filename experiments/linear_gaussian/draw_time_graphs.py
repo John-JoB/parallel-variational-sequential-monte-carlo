@@ -59,7 +59,11 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(4, 3))
     df = pd.read_csv(results_path)
     df.loc[df["Method"] == "dSMC", "Method"] = "d-SMC"
-    seaborn.lineplot(data=df[df["Time Extent"] > 30], x="Time Extent", y="Forward", hue="Method", palette="muted", hue_order=["PVMC", "MDPS", "Soft", "Stop-Grad", "Diffusion", "d-SMC", "TFS"])
+    df.loc[df["Method"] == "Soft", "Method"] = "Soft-DPF"
+    df.loc[df["Method"] == "Diffusion", "Method"] = "Diff-DPF"
+    df.loc[df["Method"] == "Stop-Grad", "Method"] = "AR-DPF"
+    df.loc[df["Method"] == "MDPS", "Method"] = "AR-DRPS"
+    seaborn.lineplot(data=df[df["Time Extent"] > 30], x="Time Extent", y="Forward", hue="Method", palette="muted", hue_order=["PVMC", "AR-DRPS", "Soft-DPF", "AR-DPF", "Diff-DPF", "d-SMC", "TFS"])
     ax.set_yscale("log")
     ax.set_xscale("log")
     ax.set_ylabel("Average Forward Time (s)")
@@ -83,7 +87,7 @@ if __name__ == "__main__":
 
 
     fig, ax = plt.subplots(figsize=(4, 3))
-    seaborn.lineplot(data=df[(df["Time Extent"] > 30) & (df["Method"] != "TFS") &  (df["Method"] != "dSMC")], x="Time Extent", y="Backward", palette="muted", hue="Method", hue_order=["PVMC", "MDPS", "Soft", "Stop-Grad", "Diffusion"])
+    seaborn.lineplot(data=df[(df["Time Extent"] > 30) & (df["Method"] != "TFS") &  (df["Method"] != "dSMC")], x="Time Extent", y="Backward", palette="muted", hue="Method", hue_order=["PVMC", "AR-DRPS", "Soft-DPF", "AR-DPF", "Diff-DPF", "d-SMC", "TFS"])
     ax.set_yscale("log")
     ax.set_xscale("log")
     ax.set_ylabel("Average Backward Time (s)")

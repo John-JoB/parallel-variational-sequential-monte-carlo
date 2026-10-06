@@ -5,8 +5,9 @@ import pydpf
 import torch
 from pydpf import FilteringModel, LogLikelihoodFactors, MarginalStopGradientDPF
 
-from diffusion_DPF import DiffusionDPF
 from experiments.linear_gaussian.kalman_stage import Kalman_mean, Kalman_log_likelihood_factors, Kalman_MSE
+from diffusion_DPF import DiffusionDPF
+
 from models.linear_gaussian import learned_model, true_model
 from experiments.common.testing import Test_Runner
 from parallel_smoother_new import ParallelSmoother
